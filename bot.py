@@ -128,11 +128,18 @@ async def _post_server_connect_embed(server: dict):
 
 def _fmt_time_val(t) -> str:
     try:
-        h = int(float(t)); m = int((float(t) - h) * 60)
+        # Handle string format like "19:21"
+        if isinstance(t, str) and ":" in t:
+            parts = t.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+        # Handle float format like 19.35
+        h = int(float(t))
+        m = int((float(t) - h) * 60)
         return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
     except Exception:
         return str(t)
-
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
