@@ -87,12 +87,12 @@ async def on_ready():
                 color=0xFF6B35,
             ))
     else:
-        log.info("No saved servers. Pair one in-game (ESC → Rust+ → Pair).")
+        log.info("No saved servers. Pair one in-game (ESC → Session → Pairing).")
         await notify(discord.Embed(
             title=" Bot Online",
             description=(
                 "No server paired yet.\n"
-                "Join a Rust server and press **ESC → Rust+ → Pair Server**."
+                "Join a Rust server and press **ESC → Session → Pairing**."
             ),
             color=0xCE422B,
         ))
@@ -140,12 +140,12 @@ async def _on_rust_chat_message(event):
 
     msg = event.message
 
-    # If the message is a !rust command, handle it in-game only — never relay to Discord
+    # If the message is a !rust command, handle it in-game instead of relaying to Discord
     if msg.message.lower().startswith("!rust"):
         query = msg.message[5:].strip()  # strip "!rust"
         log.info(f"In-game command from [{msg.name}]: {query!r}")
         await _handle_ingame_command(query, msg.name)
-        return  # Do NOT fall through to the Discord relay below
+        return
 
     # get_channel() only works if the channel is in the bot's cache.
     # Fall back to fetch_channel() (API call) if it isn't.
@@ -183,7 +183,7 @@ async def _handle_ingame_command(query: str, player_name: str):
     if not socket:
         return
     try:
-        response = await handle_query(query, manager, ingame=True)
+        response = await handle_query(query, manager)
         # Strip markdown formatting that doesn't render in Rust chat
         import re
         clean = re.sub(r"[*`_>]", "", response)
@@ -203,12 +203,11 @@ async def on_message(message: discord.Message):
 
     content_lower = message.content.lower()
 
-    # ── Chat relay channel: forward Discord → Rust (no echo back to Discord) ──
+    # ── Chat relay channel: forward Discord → Rust ────────────────────────────
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
         log.info(f"Relay channel message from {message.author}: {message.content[:60]!r}")
         if not content_lower.startswith(COMMAND_PREFIX):
             await _relay_discord_to_rust(message)
-            # Message forwarded to Rust silently — no Discord echo
         return  # Never process commands from the relay channel
 
     # ── Only handle !rust commands from this point ────────────────────────────
@@ -227,14 +226,14 @@ async def on_message(message: discord.Message):
         active = manager.get_active()
         server_name = active.get("name", "none") if active else "none"
         await message.reply(
-            f"**Rust+ Companion Bot**\n"
+            f" **Rust+ Companion Bot**\n"
             f"> Currently on: **{server_name}**\n\n"
-            f"**Commands** (prefix: `!rust`):\n"
+            f"**Commands:**\n"
             f"`status` · `players` · `time` · `map` · `team` · `events` · `wipe`\n"
             f"`servers` — list all your paired servers\n"
             f"`switch <name or #>` — switch to a different server\n"
             f"`<question>` — ask anything about Rust!\n\n"
-            f"Join a Rust server and press **ESC → Rust+ → Pair** to connect."
+            f" Join a Rust server and press **ESC → Session → Pairing** to connect."
         )
         return
 

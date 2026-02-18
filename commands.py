@@ -10,13 +10,12 @@ from server_manager import ServerManager
 
 log = logging.getLogger("Commands")
 
+# Tracks when each event type was first seen on the current server (type_id -> epoch float)
+_event_first_seen: dict[int, float] = {}
 
-async def handle_query(query: str, manager: ServerManager, ingame: bool = False) -> str:
-    """Route a /Rust+ query to the right handler.
-    
-    ingame=True  → called from in-game chat; strip server name headers from responses.
-    ingame=False → called from Discord; full formatted responses.
-    """
+
+async def handle_query(query: str, manager: ServerManager) -> str:
+    """Route a !rust query to the right handler."""
     parts = query.strip().split(None, 1)
     cmd   = parts[0].lower()
     args  = parts[1] if len(parts) > 1 else ""
@@ -38,12 +37,12 @@ async def handle_query(query: str, manager: ServerManager, ingame: bool = False)
         if not active:
             return (
                 "No server connected.\n"
-                "Join a Rust server and press **F7 → Rust+ → Pair Server**."
+                "Join a Rust server and press **ESC → Session → Pairing**."
             )
         try:
             await manager.ensure_connected()
             socket = manager.get_socket()
-            return await _dispatch_live(cmd, socket, active, ingame=ingame)
+            return await _dispatch_live(cmd, socket, active)
         except Exception as e:
             log.error(f"Live command error: {e}", exc_info=True)
             return (
@@ -63,7 +62,7 @@ def cmd_servers(manager: ServerManager) -> str:
     if not servers:
         return (
             "**No servers paired yet.**\n"
-            "Join any Rust server and press **F7 → Rust+ → Pair Server**."
+            "Join any Rust server and press **ESC → Session → Pairing**."
         )
 
     lines = []
@@ -112,38 +111,32 @@ def cmd_help() -> str:
 
 
 # ── Live Stat Dispatcher ──────────────────────────────────────────────────────
-async def _dispatch_live(cmd: str, socket, active: dict, ingame: bool = False) -> str:
+async def _dispatch_live(cmd: str, socket, active: dict) -> str:
     name = active.get("name", active["ip"])
 
     if cmd in ("status", "info"):
-        return await _cmd_status(socket, name, ingame)
+        return await _cmd_status(socket, name)
     if cmd in ("players", "online"):
-        return await _cmd_players(socket, name, ingame)
+        return await _cmd_players(socket, name)
     if cmd == "time":
-        return await _cmd_time(socket, name, ingame)
+        return await _cmd_time(socket, name)
     if cmd == "map":
-        return await _cmd_map(socket, active, ingame)
+        return await _cmd_map(socket, active)
     if cmd == "team":
         return await _cmd_team(socket)
     if cmd == "events":
-        return await _cmd_events(socket, name, ingame)
+        return await _cmd_events(socket, name)
     if cmd == "wipe":
-        return await _cmd_wipe(socket, name, ingame)
+        return await _cmd_wipe(socket, name)
     return "Unknown command."
 
 
-async def _cmd_status(socket, name: str, ingame: bool = False) -> str:
+async def _cmd_status(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
 
     queued = f" ({info.queued_players} queued)" if info.queued_players else ""
-    if ingame:
-        return (
-            f"Players: {info.players}/{info.max_players}{queued} | "
-            f"Map: {info.map} {info.size} | Seed: {info.seed} | "
-            f"Wipe: {_fmt_ts(info.wipe_time)}"
-        )
     return (
         f"**{name}**\n"
         f"> **Players:** {info.players}/{info.max_players}{queued}\n"
@@ -152,28 +145,20 @@ async def _cmd_status(socket, name: str, ingame: bool = False) -> str:
     )
 
 
-async def _cmd_players(socket, name: str, ingame: bool = False) -> str:
+async def _cmd_players(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
 
-    if ingame:
-        queued = f" ({info.queued_players} in queue)" if info.queued_players else ""
-        return f"Players: {info.players}/{info.max_players}{queued}"
     queued = f"\n> {info.queued_players} in queue" if info.queued_players else ""
     return f"**👥 {name}**\n> {info.players}/{info.max_players} players{queued}"
 
 
-async def _cmd_time(socket, name: str, ingame: bool = False) -> str:
+async def _cmd_time(socket, name: str) -> str:
     time = await socket.get_time()
     if isinstance(time, RustError):
         return f"Error: {time.reason}"
 
-    if ingame:
-        return (
-            f"Time: {_fmt_time(time.time)} | "
-            f"Sunrise: {_fmt_time(time.sunrise)} | Sunset: {_fmt_time(time.sunset)}"
-        )
     return (
         f"**🕐 {name} — In-Game Time**\n"
         f"> **Now:** {_fmt_time(time.time)}\n"
@@ -181,17 +166,15 @@ async def _cmd_time(socket, name: str, ingame: bool = False) -> str:
     )
 
 
-async def _cmd_map(socket, active: dict, ingame: bool = False) -> str:
+async def _cmd_map(socket, active: dict) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
 
     name = active.get("name", active["ip"])
     url  = f"https://rustmaps.com/map/{info.size}_{info.seed}"
-    if ingame:
-        return f"Map: {info.map} | Seed: {info.seed} | Size: {info.size} | {url}"
     return (
-        f"**🗺 {name}**\n"
+        f"** {name}**\n"
         f"> **Map:** {info.map}  |  **Seed:** `{info.seed}`  |  **Size:** {info.size}\n"
         f"> [Preview on RustMaps]({url})"
     )
@@ -213,34 +196,62 @@ async def _cmd_team(socket) -> str:
     return f"**👥 Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
 
-async def _cmd_events(socket, name: str, ingame: bool = False) -> str:
+async def _cmd_events(socket, name: str) -> str:
+    import time as _time
+
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
         return f"Error: {markers.reason}"
 
     EVENT_TYPES = {
-        1: "💥 Explosion",
-        3: "🚁 Patrol Helicopter",
-        4: "🚢 Cargo Ship",
-        6: "📦 Locked Crate",
-        7: "🪂 Chinook CH-47",
+        1: "Explosion",
+        3: "Patrol Helicopter",
+        4: "Cargo Ship",
+        6: "Locked Crate",
+        7: "Chinook CH-47",
     }
-    events = [EVENT_TYPES[m.type] for m in markers if m.type in EVENT_TYPES]
 
-    if not events:
-        return "No active events right now."
-    if ingame:
-        return "Events: " + ", ".join(events)
-    return f"**{name} — Active Events**\n" + "\n".join(f"> {e}" for e in events)
+    now = _time.time()
+
+    # Deduplicate: one entry per event type, count duplicates
+    seen: dict[int, int] = {}  # type_id -> count
+    for m in markers:
+        if m.type in EVENT_TYPES:
+            seen[m.type] = seen.get(m.type, 0) + 1
+
+    if not seen:
+        return f"**{name}** — No active events right now."
+
+    # Update the first-seen timestamp cache (module-level)
+    for type_id in seen:
+        if type_id not in _event_first_seen:
+            _event_first_seen[type_id] = now
+
+    # Purge stale cache entries for types no longer on the map
+    for type_id in list(_event_first_seen):
+        if type_id not in seen:
+            del _event_first_seen[type_id]
+
+    lines = []
+    for type_id, count in sorted(seen.items()):
+        label = EVENT_TYPES[type_id]
+        if count > 1:
+            label = f"{label} (x{count})"
+        elapsed_s = int(now - _event_first_seen[type_id])
+        if elapsed_s < 60:
+            age = f"{elapsed_s}s ago"
+        else:
+            age = f"{elapsed_s // 60}m ago"
+        lines.append(f"> **{label}** — {age}")
+
+    return f"**{name} — Active Events**\n" + "\n".join(lines)
 
 
-async def _cmd_wipe(socket, name: str, ingame: bool = False) -> str:
+async def _cmd_wipe(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
 
-    if ingame:
-        return f"Last wipe: {_fmt_ts(info.wipe_time)}"
     return f"**{name}** — Last wipe: **{_fmt_ts(info.wipe_time)}**"
 
 
