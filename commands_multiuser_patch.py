@@ -209,12 +209,10 @@ async def cmd_smart_switch_multiuser(
         await manager.ensure_connected_for_user(discord_id)
         socket = manager.get_socket_for_user(discord_id)
 
-        # FIXED: Use correct API method names
-        # The RustSocket API uses 'turn_on' and 'turn_off', not 'turn_on_smart_switch'
         if cmd == "sson":
-            result = await socket.turn_on(entity_id)
+            result = await socket.set_entity_value(entity_id, True)
         else:
-            result = await socket.turn_off(entity_id)
+            result = await socket.set_entity_value(entity_id, False)
 
         # Check for errors
         from rustplus import RustResponse
@@ -226,7 +224,6 @@ async def cmd_smart_switch_multiuser(
         return f"Smart Switch **{label}** turned **{state}**."
 
     except AttributeError as e:
-        # If the method doesn't exist, provide helpful error
         return (
             f"Smart switch control failed: {e}\n"
             "Your rustplus library version may not support smart switches.\n"
