@@ -5,13 +5,35 @@ All !rust command handlers with proper API attribute access.
 """
 
 import logging
+import json as _json
+import time as _time_module
+from pathlib import Path as _Path
 from rustplus import RustError
 from server_manager import ServerManager
 
 log = logging.getLogger("Commands")
 
-# Tracks when each event type was first seen on the current server (type_id -> epoch float)
-_event_first_seen: dict[int, float] = {}
+# ── Event timestamp cache ─────────────────────────────────────────────────────
+# Keyed by event type_id (int). Persisted so timestamps survive restarts.
+_EVENT_CACHE_FILE = _Path("event_timestamps.json")
+
+def _load_event_cache() -> dict:
+    try:
+        if _EVENT_CACHE_FILE.exists():
+            raw = _json.loads(_EVENT_CACHE_FILE.read_text())
+            cutoff = _time_module.time() - 7200  # discard entries older than 2 hours
+            return {int(k): float(v) for k, v in raw.items() if float(v) >= cutoff}
+    except Exception:
+        pass
+    return {}
+
+def _save_event_cache(cache: dict):
+    try:
+        _EVENT_CACHE_FILE.write_text(_json.dumps({str(k): v for k, v in cache.items()}))
+    except Exception:
+        pass
+
+_event_first_seen: dict = _load_event_cache()
 
 
 async def handle_query(query: str, manager: ServerManager) -> str:
@@ -20,7 +42,6 @@ async def handle_query(query: str, manager: ServerManager) -> str:
     cmd   = parts[0].lower()
     args  = parts[1] if len(parts) > 1 else ""
 
-    # Meta commands (no socket needed)
     if cmd == "servers":
         return cmd_servers(manager)
     if cmd == "switch":
@@ -28,7 +49,6 @@ async def handle_query(query: str, manager: ServerManager) -> str:
     if cmd == "help":
         return cmd_help()
 
-    # Live stat commands (need active socket)
     live_cmds = {"status", "info", "players", "online", "time",
                  "map", "team", "events", "wipe"}
 
@@ -37,7 +57,7 @@ async def handle_query(query: str, manager: ServerManager) -> str:
         if not active:
             return (
                 "No server connected.\n"
-                "Join a Rust server and press **ESC → Session → Pairing**."
+                "Join a Rust server and press **ESC -> Session -> Pairing**."
             )
         try:
             await manager.ensure_connected()
@@ -50,7 +70,6 @@ async def handle_query(query: str, manager: ServerManager) -> str:
                 "The server may be offline or App Port may be blocked."
             )
 
-    # Fallback: game Q&A
     return cmd_game_question(query)
 
 
@@ -62,14 +81,14 @@ def cmd_servers(manager: ServerManager) -> str:
     if not servers:
         return (
             "**No servers paired yet.**\n"
-            "Join any Rust server and press **ESC → Session → Pairing**."
+            "Join any Rust server and press **ESC -> Session -> Pairing**."
         )
 
     lines = []
     for i, s in enumerate(servers, 1):
         is_active = active and s["ip"] == active["ip"] and s["port"] == active["port"]
-        marker = "▶️" if is_active else f"`{i}.`"
-        lines.append(f"{marker} **{s.get('name', s['ip'])}** — `{s['ip']}:{s['port']}`")
+        marker = "active" if is_active else f"{i}."
+        lines.append(f"`{marker}` **{s.get('name', s['ip'])}** — `{s['ip']}:{s['port']}`")
 
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
         "\n\nUse `!rust switch <name or number>` to switch."
@@ -92,7 +111,7 @@ async def cmd_switch(identifier: str, manager: ServerManager) -> str:
 
 def cmd_help() -> str:
     return (
-        "**🤖 Rust+ Companion Bot** — prefix: `!rust`\n\n"
+        "**Rust+ Companion Bot** — prefix: `!rust`\n\n"
         "**Live Commands:**\n"
         "`status` — Server name, players, map, wipe\n"
         "`players` — Online player count\n"
@@ -151,7 +170,7 @@ async def _cmd_players(socket, name: str) -> str:
         return f"Error: {info.reason}"
 
     queued = f"\n> {info.queued_players} in queue" if info.queued_players else ""
-    return f"**👥 {name}**\n> {info.players}/{info.max_players} players{queued}"
+    return f"**{name}**\n> {info.players}/{info.max_players} players{queued}"
 
 
 async def _cmd_time(socket, name: str) -> str:
@@ -160,7 +179,7 @@ async def _cmd_time(socket, name: str) -> str:
         return f"Error: {time.reason}"
 
     return (
-        f"**🕐 {name} — In-Game Time**\n"
+        f"**{name} — In-Game Time**\n"
         f"> **Now:** {_fmt_time(time.time)}\n"
         f"> **Sunrise:** {_fmt_time(time.sunrise)}  |  **Sunset:** {_fmt_time(time.sunset)}"
     )
@@ -174,9 +193,9 @@ async def _cmd_map(socket, active: dict) -> str:
     name = active.get("name", active["ip"])
     url  = f"https://rustmaps.com/map/{info.size}_{info.seed}"
     return (
-        f"** {name}**\n"
+        f"**{name}**\n"
         f"> **Map:** {info.map}  |  **Seed:** `{info.seed}`  |  **Size:** {info.size}\n"
-        f"> [Preview on RustMaps]({url})"
+        f"> [View on RustMaps]({url})"
     )
 
 
@@ -186,19 +205,17 @@ async def _cmd_team(socket) -> str:
         return f"Error: {team.reason}"
 
     if not team.members:
-        return "👥 No team members. Are you in a team in-game?"
+        return "No team members found. Are you in a team in-game?"
 
     lines = []
     for m in team.members:
-        dot   = "🟢" if m.is_online else "⚫"
-        death = " ☠️" if not m.is_alive else ""
-        lines.append(f"> {dot} **{m.name}**{death}")
-    return f"**👥 Team ({len(team.members)} members)**\n" + "\n".join(lines)
+        status = "Online" if m.is_online else "Offline"
+        alive  = "" if m.is_alive else " — Dead"
+        lines.append(f"> **{m.name}** — {status}{alive}")
+    return f"**Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
 
 async def _cmd_events(socket, name: str) -> str:
-    import time as _time
-
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
         return f"Error: {markers.reason}"
@@ -211,38 +228,40 @@ async def _cmd_events(socket, name: str) -> str:
         7: "Chinook CH-47",
     }
 
-    now = _time.time()
-
-    # Deduplicate: one entry per event type, count duplicates
-    seen: dict[int, int] = {}  # type_id -> count
+    # The API emits many marker objects per physical event (one per player
+    # tracking it, per damage ring, etc.). Deduplicate by type_id only —
+    # there is at most one of each event type active at a time on a server.
+    active_types: set = set()
     for m in markers:
         if m.type in EVENT_TYPES:
-            seen[m.type] = seen.get(m.type, 0) + 1
+            active_types.add(m.type)
 
-    if not seen:
+    if not active_types:
         return f"**{name}** — No active events right now."
 
-    # Update the first-seen timestamp cache (module-level)
-    for type_id in seen:
+    now = _time_module.time()
+
+    # Record first-seen timestamp per type (only written once, on first appearance)
+    for type_id in active_types:
         if type_id not in _event_first_seen:
             _event_first_seen[type_id] = now
 
-    # Purge stale cache entries for types no longer on the map
+    # Remove types no longer on the map
     for type_id in list(_event_first_seen):
-        if type_id not in seen:
+        if type_id not in active_types:
             del _event_first_seen[type_id]
 
+    _save_event_cache(_event_first_seen)
+
     lines = []
-    for type_id, count in sorted(seen.items()):
-        label = EVENT_TYPES[type_id]
-        if count > 1:
-            label = f"{label} (x{count})"
+    for type_id in sorted(active_types):
+        label     = EVENT_TYPES[type_id]
         elapsed_s = int(now - _event_first_seen[type_id])
         if elapsed_s < 60:
-            age = f"{elapsed_s}s ago"
+            age = f"{elapsed_s}s"
         else:
-            age = f"{elapsed_s // 60}m ago"
-        lines.append(f"> **{label}** — {age}")
+            age = f"{elapsed_s // 60}m {elapsed_s % 60}s"
+        lines.append(f"> **{label}** — active for {age}")
 
     return f"**{name} — Active Events**\n" + "\n".join(lines)
 
@@ -316,7 +335,7 @@ def cmd_game_question(query: str) -> str:
             "**Bradley APC:**\n"
             "> Location: Launch Site\n"
             "> Use **HV rockets** or 40mm HE\n"
-            "> Stay mobile — 360° turret\n"
+            "> Stay mobile — 360 degree turret\n"
             "> Drops **3 Bradley Crates**"
         ),
         ("cargo", "ship"): (
@@ -340,27 +359,22 @@ def cmd_game_question(query: str) -> str:
 
     return (
         f"No answer for: *\"{query}\"*\n\n"
-        "Try: `status` · `players` · `time` · `team` · `events`\n\n"
+        "Try: `status` - `players` - `time` - `team` - `events`\n\n"
         "Or check:\n"
-        "> 📖 [Rust Wiki](https://wiki.facepunch.com/rust/)\n"
-        "> 🗺️ [RustMaps](https://rustmaps.com)"
+        "> [Rust Wiki](https://wiki.facepunch.com/rust/)\n"
+        "> [RustMaps](https://rustmaps.com)"
     )
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _fmt_time(t) -> str:
-    """Format a Rust time value to 12-hour clock.
-    The API may return a float (e.g. 6.25) or a pre-formatted string (e.g. '6:14').
-    Both are handled.
-    """
     if isinstance(t, str):
-        # Already formatted as "H:MM" — just convert to 12-hour with AM/PM
         try:
             parts = t.split(":")
             h, m = int(parts[0]), int(parts[1]) if len(parts) > 1 else 0
             return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
         except Exception:
-            return t  # Return as-is if we can't parse it
+            return t
     try:
         h = int(float(t))
         m = int((float(t) - h) * 60)

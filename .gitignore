@@ -3,3 +3,9 @@
 servers.json
 rustplus.py.config.json
 /__pycache__/
+.build/
+/dist/
+pair.spec
+rust-bot.spec
+pair.exe
+rust-bot.exe
