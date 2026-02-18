@@ -2,7 +2,7 @@
 Rust+ Discord Companion Bot — bot.py
 ────────────────────────────────────────────────────────────────────────────
 Three dedicated channels:
-  COMMAND_CHANNEL_ID      → !rust commands and their replies
+  COMMAND_CHANNEL_ID      → ! commands and their replies
   NOTIFICATION_CHANNEL_ID → pairing alerts, server switches, bot status
   CHAT_RELAY_CHANNEL_ID   → in-game team chat ↔ Discord relay (bidirectional)
 """
@@ -28,7 +28,7 @@ DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
 COMMAND_CHANNEL      = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
 NOTIFICATION_CHANNEL = int(os.getenv("NOTIFICATION_CHANNEL_ID", "0"))
 CHAT_RELAY_CHANNEL   = int(os.getenv("CHAT_RELAY_CHANNEL_ID", "0"))
-COMMAND_PREFIX       = "!rust"
+COMMAND_PREFIX       = "!"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -225,7 +225,7 @@ async def _on_rust_chat_message(event):
 
     msg = event.message
 
-    if msg.message.lower().startswith("!rust"):
+    if msg.message.lower().startswith("!"):
         query = msg.message[5:].strip()
         log.info(f"In-game command from [{msg.name}]: {query!r}")
         await _handle_ingame_command(query, msg.name)
@@ -255,7 +255,7 @@ async def _on_rust_chat_message(event):
 
 
 async def _handle_ingame_command(query: str, player_name: str):
-    """Run a !rust command from in-game and send the result back to team chat."""
+    """Run a ! command from in-game and send the result back to team chat."""
     socket = manager.get_socket()
     if not socket:
         return
@@ -290,12 +290,12 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # Ignore !rust commands outside the command channel
+    # Ignore ! commands outside the command channel
     if COMMAND_CHANNEL and message.channel.id != COMMAND_CHANNEL:
         return
 
     query = message.content[len(COMMAND_PREFIX):].strip()
-    log.info(f"[{message.author}] !rust {query or '(empty)'}")
+    log.info(f"[{message.author}] ! {query or '(empty)'}")
 
     if not query:
         active = manager.get_active()
@@ -318,7 +318,7 @@ async def on_message(message: discord.Message):
             log.error(f"Command error: {e}", exc_info=True)
             response = f"Error: `{e}`"
 
-    # handle_query may return a plain string or (text, image_bytes) for !rust map
+    # handle_query may return a plain string or (text, image_bytes) for !map
     if isinstance(response, tuple):
         text, img_bytes = response
         try:
