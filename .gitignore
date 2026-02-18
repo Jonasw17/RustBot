@@ -1,12 +1,12 @@
 .env
 .idea
-servers.json
-rustplus.config.json
 /__pycache__/
 .build/
 /dist/
-pair.spec
 rust-bot.spec
-pair.exe
 rust-bot.exe
+servers.json
+rustplus.config.json
 users.json
+timers.json
+event_timestamps.json
