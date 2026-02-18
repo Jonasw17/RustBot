@@ -16,7 +16,6 @@ Your playerToken is UNIQUE per server — that's why we need FCM pairing.
 import asyncio
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Callable, Optional
@@ -27,6 +26,15 @@ log = logging.getLogger("ServerManager")
 
 SERVERS_FILE = Path("servers.json")
 FCM_CONFIG   = Path("rustplus.py.config.json")  # Created by `python pair.py`
+
+
+def _load() -> dict:
+    if SERVERS_FILE.exists():
+        try:
+            return json.loads(SERVERS_FILE.read_text())
+        except Exception as e:
+            log.warning(f"Could not load servers.json: {e}")
+    return {"active": None, "servers": {}}
 
 
 class ServerManager:
@@ -49,7 +57,7 @@ class ServerManager:
     """
 
     def __init__(self):
-        self._data: dict = self._load()
+        self._data: dict = _load()
         self._socket: Optional[RustSocket] = None
         self._on_paired_callbacks: list[Callable] = []
         self._chat_callbacks: list[Callable] = []
@@ -62,13 +70,6 @@ class ServerManager:
 
 
     # ── Persistence ───────────────────────────────────────────────────────────
-    def _load(self) -> dict:
-        if SERVERS_FILE.exists():
-            try:
-                return json.loads(SERVERS_FILE.read_text())
-            except Exception as e:
-                log.warning(f"Could not load servers.json: {e}")
-        return {"active": None, "servers": {}}
 
     def _save(self):
         SERVERS_FILE.write_text(json.dumps(self._data, indent=2))
@@ -175,7 +176,7 @@ class ServerManager:
 
         self._data["active"] = key
         self._save()
-        log.info(f"Connected ✅")
+        log.info(f"Connected")
         return self._socket
 
     async def connect_active(self):
@@ -276,4 +277,4 @@ class ServerManager:
 
         thread = threading.Thread(target=_run_fcm, daemon=True, name="FCMListener")
         thread.start()
-        log.info("FCM listener running in background thread ✅")
+        log.info("FCM listener running in background thread")
