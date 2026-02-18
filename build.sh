@@ -10,7 +10,8 @@ source build_env/bin/activate
 
 echo
 echo "Step 2: Installing only what the bot needs..."
-pip install --quiet discord.py rustplus python-dotenv pyinstaller
+pip install --quiet -r requirements.txt
+pip install --quiet pyinstaller
 
 echo
 echo "Step 3: Building rust-bot ..."

@@ -11,4 +11,3 @@ rustplus>=6.0.9
 # Environment variable loader
 python-dotenv>=1.0.0
 
-

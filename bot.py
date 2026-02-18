@@ -58,6 +58,33 @@ async def notify(embed: discord.Embed, file: discord.File = None):
     else:
         log.warning(f"Notification channel {NOTIFICATION_CHANNEL} not found")
 
+# ── Parse Time helper ───────────────────────────────────────────────────────
+def _parse_time_to_float(t) -> float:
+    """Convert time from string ('19:21') or float (19.35) to float."""
+    try:
+        if isinstance(t, str) and ":" in t:
+            parts = t.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return h + (m / 60.0)
+        return float(t)
+    except Exception:
+        return 0.0
+
+def _fmt_time_val(t) -> str:
+    try:
+        # Handle string format like "19:21"
+        if isinstance(t, str) and ":" in t:
+            parts = t.split(":")
+            h = int(parts[0])
+            m = int(parts[1]) if len(parts) > 1 else 0
+            return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+        # Handle float format like 19.35
+        h = int(float(t))
+        m = int((float(t) - h) * 60)
+        return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+    except Exception:
+        return str(t)
 
 # ── Server connect embed ──────────────────────────────────────────────────────
 async def _post_server_connect_embed(server: dict):
@@ -88,9 +115,11 @@ async def _post_server_connect_embed(server: dict):
         wipe_str   = f"{wipe_days:.1f} days" if wipe_days is not None else "Unknown"
 
         # Time till nightfall (in-game hours → real minutes, ~2.5 min per in-game hour)
-        now_ig   = float(time_obj.time)
-        sunset   = float(time_obj.sunset)
-        is_day   = float(time_obj.sunrise) <= now_ig < sunset
+        now_ig  = _parse_time_to_float(time_obj.time)
+        sunset  = _parse_time_to_float(time_obj.sunset)
+        sunrise = _parse_time_to_float(time_obj.sunrise)
+
+        is_day   = _parse_time_to_float(time_obj.sunrise) <= now_ig < sunset
         if is_day:
             diff_h       = (sunset - now_ig) % 24
             till_night   = f"~{int(diff_h * 2.5)}m"
@@ -124,22 +153,6 @@ async def _post_server_connect_embed(server: dict):
             description=f"`{ip}:{port}`",
             color=0xCE422B,
         ))
-
-
-def _fmt_time_val(t) -> str:
-    try:
-        # Handle string format like "19:21"
-        if isinstance(t, str) and ":" in t:
-            parts = t.split(":")
-            h = int(parts[0])
-            m = int(parts[1]) if len(parts) > 1 else 0
-            return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
-        # Handle float format like 19.35
-        h = int(float(t))
-        m = int((float(t) - h) * 60)
-        return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
-    except Exception:
-        return str(t)
 
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
