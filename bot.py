@@ -340,9 +340,9 @@ async def on_message(message: discord.Message):
             f"**Rust+ Companion Bot**\n"
             f"> Currently on: **{server_name}**\n\n"
             f"**Commands:**\n"
-            f"`status` · `players` · `time` · `map` · `team` · `events` · `wipe`\n"
-            f"`timer add <time> <label>` · `timers` · `sson <id>` · `ssoff <id>`\n"
-            f"`servers` · `switch <name or #>`\n\n"
+            f"`status` - `players` - `time` - `map` - `team` - `events` - `wipe`\n"
+            f"`timer add <time> <label>` - `timers` - `sson <id>` - `ssoff <id>`\n"
+            f"`servers` - `switch <name or #>`\n\n"
             f"Join a Rust server and press **ESC -> Session -> Pairing** to connect."
         )
         return
