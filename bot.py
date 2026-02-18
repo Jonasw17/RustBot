@@ -280,7 +280,9 @@ async def _handle_ingame_command(query: str, player_name: str):
     if not socket:
         return
     try:
-        response = await handle_query(query, manager)
+        response = await handle_query(query, manager, ctx=None)
+        if response is None:
+            return
         # If response is a tuple (map command returns image), just send the text part
         if isinstance(response, tuple):
             response = response[0]
@@ -333,7 +335,10 @@ async def on_message(message: discord.Message):
 
     async with message.channel.typing():
         try:
-            response = await handle_query(query, manager)
+            response = await handle_query(query, manager, ctx=message)
+            # Add None check after getting response:
+            if response is None:
+                return
         except Exception as e:
             log.error(f"Command error: {e}", exc_info=True)
             response = f"Error: `{e}`"

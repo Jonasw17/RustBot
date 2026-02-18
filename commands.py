@@ -9,10 +9,10 @@ import io
 import logging
 import json as _json
 import time as _time_module
+import discord
 from pathlib import Path as _Path
 from datetime import datetime, timezone
 from typing import Any, Coroutine
-
 from rustplus import RustError
 from server_manager import ServerManager
 from timers import timer_manager
@@ -20,6 +20,55 @@ from timers import timer_manager
 log = logging.getLogger("Commands")
 
 _BOT_START_TIME = _time_module.time()
+
+# ── Clear Chat cmd ─────────────────────────────────────────────────────
+async def cmd_clear(args: str, ctx) -> str | None:
+    """
+    !clear [amount]  - Delete last N messages (default 10, max 1000)
+    !clear all       - Delete all messages in channel (up to 1000)
+
+    Requires ctx to be the Discord message context.
+    """
+    if ctx is None:
+        return "Clear command only works from Discord (not in-game)."
+
+    # Check if user has manage messages permission
+    if not ctx.channel.permissions_for(ctx.author).manage_messages:
+        return "You need **Manage Messages** permission to use this command."
+
+    # Parse arguments
+    if not args:
+        amount = 10
+    elif args.lower() == "all":
+        amount = 1000
+    else:
+        try:
+            amount = int(args)
+            if amount < 1:
+                return "Amount must be at least 1."
+            if amount > 1000:
+                return "Maximum 1000 messages can be cleared at once."
+        except ValueError:
+            return "Usage: `!clear [amount]` or `!clear all`\nExample: `!clear 50`"
+
+    try:
+        # Delete messages (including the command message)
+        deleted = await ctx.channel.purge(limit=amount + 1)
+
+        # Send confirmation message that self-deletes after 5 seconds
+        confirmation = await ctx.channel.send(
+            f"Cleared **{len(deleted) - 1}** message(s)."
+        )
+        await asyncio.sleep(5)
+        await confirmation.delete()
+
+        return None  # Don't send another message since we already sent confirmation
+    except discord.Forbidden:
+        return "Bot lacks **Manage Messages** permission in this channel."
+    except discord.HTTPException as e:
+        return f"Failed to clear messages: `{e}`"
+
+
 
 # ── Event timestamp cache ─────────────────────────────────────────────────────
 _EVENT_CACHE_FILE = _Path("event_timestamps.json")
@@ -72,6 +121,8 @@ async def handle_query(query: str, manager: ServerManager) -> str | tuple:
     # Meta / no-socket commands
     if cmd in ("servers", "server"):
         return cmd_servers(manager)
+    if cmd == "clear":
+        return await cmd_clear(args, ctx)
     if cmd == "switch":
         return await cmd_switch(args, manager)
     if cmd == "help":
@@ -154,7 +205,8 @@ def cmd_help() -> str:
         "`events` · `heli` · `cargo` · `chinook` · `large` · `small`\n\n"
         "**Utilities:**\n"
         "`timer add <time> <label>` · `timer remove <id>` · `timers`\n"
-        "`sson <name or id>` · `ssoff <name or id>`\n\n"
+        "`sson <name or id>` · `ssoff <name or id>`\n"
+        "`clear [amount]` · `clear all`\n\n"
         "**Game Info:**\n"
         "`craft <item>` · `recycle <item>` · `research <item>`\n"
         "`decay <item>` · `upkeep <item>` · `item <n>` · `cctv <monument>`\n\n"
