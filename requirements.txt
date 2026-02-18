@@ -1,0 +1,9 @@
+# Discord bot framework
+discord.py>=2.3.0
+
+# Rust+ Companion API wrapper (olijeffers0n/rustplus)
+# Includes FCMListener for automatic server pairing
+rustplus>=6.0.9
+
+# Environment variable loader
+python-dotenv>=1.0.0
