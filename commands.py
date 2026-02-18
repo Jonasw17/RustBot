@@ -1,7 +1,7 @@
 """
 commands.py
 ────────────────────────────────────────────────────────────────────────────
-All !rust command handlers.
+All !command handlers.
 """
 
 import asyncio
@@ -12,11 +12,15 @@ import time as _time_module
 import discord
 from pathlib import Path as _Path
 from datetime import datetime, timezone
-from typing import Any, Coroutine
-from typing import Any, Coroutine
 from rustplus import RustError
 from server_manager import ServerManager
 from timers import timer_manager
+
+from bot import user_manager
+from multi_user_auth import cmd_register, cmd_whoami, cmd_users, cmd_unregister
+from multi_user_auth import UserManager
+from server_manager_multiuser import MultiUserServerManager
+
 
 log = logging.getLogger("Commands")
 
@@ -33,8 +37,11 @@ async def cmd_clear(args: str, ctx) -> str | None:
     if ctx is None:
         return "Clear command only works from Discord (not in-game)."
 
-    # Check if user has manage messages permission
-    if not ctx.channel.permissions_for(ctx.author).manage_messages:
+    # If this is a DM channel, allow user to clear bot responses there without Manage Messages perm
+    is_dm = isinstance(ctx.channel, discord.DMChannel)
+
+    # Check if user has manage messages permission (only required in guild channels)
+    if not is_dm and not ctx.channel.permissions_for(ctx.author).manage_messages:
         return "You need **Manage Messages** permission to use this command."
 
     # Parse arguments
@@ -53,17 +60,56 @@ async def cmd_clear(args: str, ctx) -> str | None:
             return "Usage: `!clear [amount]` or `!clear all`\nExample: `!clear 50`"
 
     try:
-        # Delete messages (including the command message)
-        deleted = await ctx.channel.purge(limit=amount + 1)
+        if is_dm:
+            # Delete bot messages in this DM channel up to `amount`
+            deleted_count = 0
+            # Walk recent history; gather bot messages
+            to_delete = []
+            async for m in ctx.channel.history(limit=1000):
+                if m.author and m.author.bot:
+                    to_delete.append(m)
+                    if len(to_delete) >= amount:
+                        break
 
-        # Send confirmation message that self-deletes after 5 seconds
-        confirmation = await ctx.channel.send(
-            f"Cleared **{len(deleted) - 1}** message(s)."
-        )
-        await asyncio.sleep(5)
-        await confirmation.delete()
+            for m in to_delete:
+                try:
+                    await m.delete()
+                    deleted_count += 1
+                except Exception:
+                    # ignore individual deletion failures
+                    pass
 
-        return None  # Don't send another message since we already sent confirmation
+            # Delete the invoking command message if possible
+            try:
+                await ctx.delete()
+            except Exception:
+                pass
+
+            # Send confirmation message that self-deletes after 5 seconds
+            confirmation = await ctx.channel.send(
+                f"Cleared **{deleted_count}** message(s)."
+            )
+            await asyncio.sleep(5)
+            try:
+                await confirmation.delete()
+            except Exception:
+                pass
+
+            return None  # already informed the user
+
+        else:
+            # Delete messages (including the command message) in a guild channel
+            deleted = await ctx.channel.purge(limit=amount + 1)
+
+            # Send confirmation message that self-deletes after 5 seconds
+            confirmation = await ctx.channel.send(
+                f"Cleared **{len(deleted) - 1}** message(s)."
+            )
+            await asyncio.sleep(5)
+            await confirmation.delete()
+
+            return None  # Don't send another message since we already sent confirmation
+
     except discord.Forbidden:
         return "Bot lacks **Manage Messages** permission in this channel."
     except discord.HTTPException as e:
@@ -113,25 +159,40 @@ _switches: dict = _load_switches()
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
-async def handle_query(query: str, manager: ServerManager, ctx=None) -> str | tuple:
-    """Returns a str response, or a tuple (str, bytes) where bytes is a JPEG image."""
+async def handle_query(
+        query: str,
+        manager,
+        user_manager=None,
+        ctx=None,
+        discord_id=None
+) -> str | tuple:
     parts = query.strip().split(None, 1)
-    cmd   = parts[0].lower()
-    args  = parts[1].strip() if len(parts) > 1 else ""
+    cmd = parts[0].lower()
+    args = parts[1].strip() if len(parts) > 1 else ""
+
+    # User registration commands (new)
+    if cmd == "register":
+        return await cmd_register(ctx, user_manager)
+    if cmd == "whoami":
+        return await cmd_whoami(ctx, user_manager)
+    if cmd == "users":
+        return await cmd_users(ctx, user_manager)
+    if cmd == "unregister":
+        return await cmd_unregister(ctx, user_manager)
 
     # Meta / no-socket commands
     if cmd in ("servers", "server"):
-        return cmd_servers(manager)
+        return cmd_servers_multiuser(manager)
     if cmd == "clear":
         return await cmd_clear(args, ctx)
     if cmd == "switch":
-        return await cmd_switch(args, manager)
+        return await cmd_switch_multiuser(args, manager)
     if cmd == "help":
         return cmd_help()
     if cmd in ("timer", "timers"):
         return await cmd_timer(args)
     if cmd in ("sson", "ssoff"):
-        return await cmd_smart_switch(cmd, args, manager)
+        return await cmd_smart_switch_multiuser(cmd, args, manager)
 
     # Commands needing a live socket
     live_cmds = {
@@ -150,9 +211,12 @@ async def handle_query(query: str, manager: ServerManager, ctx=None) -> str | tu
                 "No server connected.\n"
                 "Join a Rust server and press **ESC -> Session -> Pairing**."
             )
+        if not user_manager.has_user(discord_id):
+            return "You need to register first. DM the bot with `!register`"
+
         try:
-            await manager.ensure_connected()
-            socket = manager.get_socket()
+            await manager.ensure_connected_for_user(discord_id)
+            socket = manager.get_socket_for_user(discord_id)
             return await _dispatch_live(cmd, args, socket, active)
         except Exception as e:
             log.error(f"Live command error: {e}", exc_info=True)
@@ -165,7 +229,7 @@ async def handle_query(query: str, manager: ServerManager, ctx=None) -> str | tu
 
 
 # ── Meta Commands ─────────────────────────────────────────────────────────────
-def cmd_servers(manager: ServerManager) -> str:
+def cmd_servers_multiuser(manager: ServerManager) -> str:
     servers = manager.list_servers()
     active  = manager.get_active()
     if not servers:
@@ -179,12 +243,12 @@ def cmd_servers(manager: ServerManager) -> str:
         tag = "`active`" if is_active else f"`{i}.`"
         lines.append(f"{tag} **{s.get('name', s['ip'])}** — `{s['ip']}:{s['port']}`")
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
-        "\n\nUse `!rust switch <name or number>` to switch."
+        "\n\nUse `!switch <name or number>` to switch."
 
 
-async def cmd_switch(identifier: str, manager: ServerManager) -> str:
+async def cmd_switch_multiuser(identifier: str, manager: ServerManager) -> str:
     if not identifier:
-        return "Usage: `!rust switch <server name or number>`"
+        return "Usage: `!switch <server name or number>`"
     server = manager.switch_to(identifier)
     if not server:
         return f"No server found matching `{identifier}`."
@@ -213,7 +277,7 @@ def cmd_help() -> str:
         "`decay <item>` · `upkeep <item>` · `item <n>` · `cctv <monument>`\n\n"
         "**Multi-Server:**\n"
         "`servers` · `switch <name or #>`\n\n"
-        "**Q&A:** `!rust <question>`"
+        "**Q&A:** `!<question>`"
     )
 
 
@@ -227,10 +291,10 @@ async def cmd_timer(args: str) -> str:
     rest  = parts[1].strip() if len(parts) > 1 else ""
 
     if sub == "add":
-        # !rust timer add 15m TC running low
+        # !timer add 15m TC running low
         sub_parts = rest.split(None, 1)
         if not sub_parts:
-            return "Usage: `!rust timer add <time> <label>`\nExample: `!rust timer add 15m TC is low`"
+            return "Usage: `!timer add <time> <label>`\nExample: `!timer add 15m TC is low`"
         duration = sub_parts[0]
         label    = sub_parts[1] if len(sub_parts) > 1 else ""
         ok, msg  = timer_manager.add(duration, label)
@@ -238,19 +302,19 @@ async def cmd_timer(args: str) -> str:
 
     if sub == "remove":
         if not rest:
-            return "Usage: `!rust timer remove <id>`"
+            return "Usage: `!timer remove <id>`"
         ok, msg = timer_manager.remove(rest.split()[0])
         return msg
 
-    # Bare "!rust timer" shows list
+    # Bare "!timer" shows list
     return timer_manager.list_timers()
 
 
 # ── Smart Switch Commands ─────────────────────────────────────────────────────
-async def cmd_smart_switch(cmd: str, args: str, manager: ServerManager) -> str:
+async def cmd_smart_switch_multiuser(cmd: str, args: str, manager: ServerManager) -> str:
     """
-    !rust sson <name or entity_id>
-    !rust ssoff <name or entity_id>
+    !sson <name or entity_id>
+    !ssoff <name or entity_id>
 
     Entity IDs are registered via the pairing notification or stored manually
     in switches.json as {"my tc light": 1234567}.
@@ -259,7 +323,7 @@ async def cmd_smart_switch(cmd: str, args: str, manager: ServerManager) -> str:
         registered = ", ".join(f"`{k}` ({v})" for k, v in _switches.items())
         hint = f"\nRegistered switches: {registered}" if registered else \
             "\nNo switches registered yet. Add them to `switches.json` as `{\"name\": entity_id}`."
-        return f"Usage: `!rust sson <name or id>` / `!rust ssoff <name or id>`{hint}"
+        return f"Usage: `!sson <name or id>` / `!ssoff <name or id>`{hint}"
 
     entity_id = _resolve_switch(args)
     if entity_id is None:
@@ -277,9 +341,9 @@ async def cmd_smart_switch(cmd: str, args: str, manager: ServerManager) -> str:
         await manager.ensure_connected()
         socket = manager.get_socket()
         if cmd == "sson":
-            result = await socket.turn_on_smart_switch(entity_id)
+            result = await socket.set_entity_value(entity_id, True)
         else:
-            result = await socket.turn_off_smart_switch(entity_id)
+            result = await socket.set_entity_value(entity_id, False)
 
         if isinstance(result, RustError):
             return f"Error: {result.reason}"
@@ -489,8 +553,8 @@ async def _cmd_alive(socket, args: str) -> str:
 
 async def _cmd_leader(socket, args: str) -> str:
     """
-    !rust leader           — promote self
-    !rust leader <name>    — promote teammate by name
+    !leader           — promote self
+    !leader <name>    — promote teammate by name
     """
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -802,7 +866,7 @@ def _fuzzy_match(query: str, data: dict):
 
 def _cmd_craft(args: str) -> str:
     if not args:
-        return "Usage: `!rust craft <item>`  e.g. `!rust craft rocket`"
+        return "Usage: `!craft <item>`  e.g. `!craft rocket`"
     k, data = _fuzzy_match(args, _CRAFT_DATA)
     if not data:
         return f"No craft data for `{args}`."
@@ -811,7 +875,7 @@ def _cmd_craft(args: str) -> str:
 
 def _cmd_recycle(args: str) -> str:
     if not args:
-        return "Usage: `!rust recycle <item>`"
+        return "Usage: `!recycle <item>`"
     k, data = _fuzzy_match(args, _RECYCLE_DATA)
     if not data:
         return f"No recycle data for `{args}`."
@@ -820,7 +884,7 @@ def _cmd_recycle(args: str) -> str:
 
 def _cmd_research(args: str) -> str:
     if not args:
-        return "Usage: `!rust research <item>`"
+        return "Usage: `!research <item>`"
     k, cost = _fuzzy_match(args, _RESEARCH_DATA)
     if cost is None:
         return f"No research data for `{args}`."
@@ -829,7 +893,7 @@ def _cmd_research(args: str) -> str:
 
 def _cmd_decay(args: str) -> str:
     if not args:
-        return "Usage: `!rust decay <item>`"
+        return "Usage: `!decay <item>`"
     k, hours = _fuzzy_match(args, _DECAY_DATA)
     if hours is None:
         return f"No decay data for `{args}`."
@@ -838,7 +902,7 @@ def _cmd_decay(args: str) -> str:
 
 def _cmd_upkeep_item(args: str) -> str:
     if not args:
-        return "Usage: `!rust upkeep <item>`"
+        return "Usage: `!upkeep <item>`"
     k, data = _fuzzy_match(args, _UPKEEP_DATA)
     if not data:
         return f"No upkeep data for `{args}`."
@@ -848,7 +912,7 @@ def _cmd_upkeep_item(args: str) -> str:
 
 def _cmd_item(args: str) -> str:
     if not args:
-        return "Usage: `!rust item <name>`"
+        return "Usage: `!item <name>`"
     lines = []
     _, craft    = _fuzzy_match(args, _CRAFT_DATA)
     _, research = _fuzzy_match(args, _RESEARCH_DATA)
@@ -870,7 +934,7 @@ def _cmd_item(args: str) -> str:
 def _cmd_cctv(args: str) -> str:
     if not args:
         keys = ", ".join(f"`{k}`" for k in sorted(_CCTV_DATA))
-        return f"Usage: `!rust cctv <monument>`\nAvailable: {keys}"
+        return f"Usage: `!cctv <monument>`\nAvailable: {keys}"
     k, codes = _fuzzy_match(args, _CCTV_DATA)
     if not codes:
         return f"No CCTV codes for `{args}`."
@@ -886,7 +950,6 @@ def cmd_game_question(query: str) -> str:
         ("sulfur", "armored"):        "**Armored Wall:** C4: **4** | Rockets: **8** | Satchels: **12** (~4,000 sulfur)",
         ("scrap", "farm"):            "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
         ("best", "weapon", "early"):  "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
-        ("starter", "base"):          "**Starter Base:**\n> 2x1 or 2x2 stone with airlock\n> TC in sealed room first\n> Stone up ASAP",
         ("bradley", "apc"):           "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
         ("cargo", "ship"):            "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists — bring armor",
         ("radiation",):               "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
@@ -896,8 +959,7 @@ def cmd_game_question(query: str) -> str:
             return answer
     return (
         f"No answer for: *\"{query}\"*\n\n"
-        "Try: `status` · `events` · `craft <item>` · `cctv <monument>`\n"
-        "> [Rust Wiki](https://wiki.facepunch.com/rust/)  ·  [RustMaps](https://rustmaps.com)"
+        "Try: `help`"
     )
 
 

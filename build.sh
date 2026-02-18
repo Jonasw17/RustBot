@@ -26,14 +26,6 @@ python -m PyInstaller \
   --collect-all websockets \
   bot.py
 
-echo
-echo "Step 4: Building pair ..."
-python -m PyInstaller \
-  --onefile \
-  --name pair \
-  --console \
-  --collect-all rustplus \
-  pair.py
 
 deactivate
 
@@ -47,7 +39,6 @@ if [ -f dist/rust-bot ]; then
     echo
     echo "Your files are in dist/"
     echo "  rust-bot  - the bot"
-    echo "  pair      - pairing tool"
     echo
     echo "Copy both files plus your .env to wherever you want to run the bot."
 else

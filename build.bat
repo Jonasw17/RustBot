@@ -25,15 +25,6 @@ python -m PyInstaller ^
   bot.py
 
 echo.
-echo Step 4: Building pair.exe ...
-python -m PyInstaller ^
-  --onefile ^
-  --name pair ^
-  --console ^
-  --collect-all rustplus ^
-  pair.py
-
-echo.
 call deactivate
 echo Cleaning up build environment...
 rmdir /s /q build_env
@@ -44,7 +35,6 @@ if exist dist\rust-bot.exe (
     echo.
     echo Your files are in dist\
     echo   rust-bot.exe  - the bot
-    echo   pair.exe      - pairing tool
     echo.
     echo Copy both files plus your .env to wherever you want to run the bot.
 ) else (
