@@ -194,7 +194,7 @@ async def on_ready():
             description=(
                 "No users registered yet.\n\n"
                 "**To register:**\n"
-                "1. Run `pair.py` on your computer\n"
+                "1. Run `pair.bat` on your computer\n"
                 "2. DM the bot with `!register` + your config file\n"
                 "3. Join any Rust server and pair it in-game"
             ),

@@ -4,7 +4,7 @@ multi_user_auth.py
 Allows multiple Discord users to pair their own Rust+ accounts with the bot.
 
 How it works:
-1. Each user runs their own FCM registration (pair.py)
+1. Each user runs their own FCM registration (pair.bat)
 2. They provide their credentials to the bot via DM
 3. Bot stores multiple user credentials and can switch between them
 4. When someone uses a command, bot uses THEIR credentials (not just the host's)
@@ -19,6 +19,7 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, Dict
+import discord
 
 log = logging.getLogger("MultiUserAuth")
 
@@ -152,33 +153,36 @@ class UserManager:
 
 # ── Command Handlers ──────────────────────────────────────────────────────────
 
-async def cmd_register(ctx, user_manager: UserManager) -> str:
+async def cmd_register(message, user_manager: UserManager) -> str:
     """
     !register
 
     DM the bot with this command along with your rustplus.py.config.json file.
     Bot will parse it and register your account.
+
+    Args:
+        message: The discord.Message object (NOT a Context)
+        user_manager: UserManager instance
     """
     # This should only work in DMs
-    if not isinstance(ctx.channel, discord.DMChannel):
+    if not isinstance(message.channel, discord.DMChannel):
         return (
             "Please use this command in a **DM with the bot** for security.\n"
             "Send `!register` along with your `rustplus.py.config.json` file attachment."
         )
 
     # Check for attachment
-    if not ctx.message.attachments:
+    if not message.attachments:
         return (
-            "Please attach your `rustplus.py.config.json` file.\n\n"
+            "Please attach your `rustplus.config.json` file.\n\n"
             "**How to get this file:**\n"
-            "1. Download pair.py from the bot repo\n"
-            "2. Run `python pair.py` on your computer\n"
-            "3. Sign in with Steam when prompted\n"
-            "4. This creates rustplus.py.config.json\n"
-            "5. Send that file to me here in DM with `!register`"
+            "1. Run FCM registration (use pair_windows.bat)\n"
+            "2. Sign in with Steam when prompted\n"
+            "3. File will be created on your Desktop\n"
+            "4. Send that file to me here in DM with `!register`"
         )
 
-    attachment = ctx.message.attachments[0]
+    attachment = message.attachments[0]
     if not attachment.filename.endswith('.json'):
         return "Please send a JSON file (rustplus.py.config.json)"
 
@@ -191,22 +195,22 @@ async def cmd_register(ctx, user_manager: UserManager) -> str:
         # The FCM config contains the Steam ID in its structure
         steam_id = fcm_creds.get("fcm", {}).get("steamId")
         if not steam_id:
-            return "Could not find Steam ID in the config file. Make sure you uploaded the correct rustplus.py.config.json"
+            return "Could not find Steam ID in the config file. Make sure you uploaded the correct rustplus.config.json"
 
         # Register the user
         success = user_manager.add_user(
-            str(ctx.author.id),
-            str(ctx.author),
+            str(message.author.id),
+            str(message.author),
             int(steam_id),
             fcm_creds
         )
 
         if success:
             return (
-                f"**Registration successful!**\n\n"
+                f"✅ **Registration successful!**\n\n"
                 f"Your account is now linked:\n"
                 f"> Steam ID: `{steam_id}`\n"
-                f"> Discord: {ctx.author.mention}\n\n"
+                f"> Discord: {message.author.mention}\n\n"
                 f"**Next steps:**\n"
                 f"1. Join any Rust server in-game\n"
                 f"2. Press ESC → Rust+ → Pair Server\n"
@@ -217,15 +221,15 @@ async def cmd_register(ctx, user_manager: UserManager) -> str:
             return "Registration failed. Check bot logs for details."
 
     except json.JSONDecodeError:
-        return "Invalid JSON file. Make sure you uploaded rustplus.py.config.json"
+        return "Invalid JSON file. Make sure you uploaded rustplus.config.json"
     except Exception as e:
         log.error(f"Registration error: {e}", exc_info=True)
         return f"Registration failed: {e}"
 
 
-async def cmd_whoami(ctx, user_manager: UserManager) -> str:
+async def cmd_whoami(message, user_manager: UserManager) -> str:
     """!whoami - Check your registration status"""
-    user = user_manager.get_user(str(ctx.author.id))
+    user = user_manager.get_user(str(message.author.id))
     if not user:
         return (
             "You're not registered yet.\n"
@@ -235,18 +239,18 @@ async def cmd_whoami(ctx, user_manager: UserManager) -> str:
     server_count = len(user.get("paired_servers", {}))
     return (
         f"**Your Account:**\n"
-        f"> Discord: {ctx.author.mention}\n"
+        f"> Discord: {message.author.mention}\n"
         f"> Steam ID: `{user['steam_id']}`\n"
         f"> Paired Servers: **{server_count}**\n\n"
         f"Use `!servers` to see your paired servers."
     )
 
 
-async def cmd_users(ctx, user_manager: UserManager) -> str:
+async def cmd_users(message, user_manager: UserManager) -> str:
     """!users - List all registered users (admin only)"""
-    admin_role = discord.utils.get(ctx.guild.roles, name="Admin")
-    if admin_role not in ctx.author.roles:
-        return "This command is admin-only."
+    admin_role = discord.utils.get(message.guild.roles, name="Admin")
+    if admin_role not in message.author.roles:
+        return "You don't have permission to use this command."
     users = user_manager.list_users()
     if not users:
         return "No users registered yet."
@@ -261,14 +265,10 @@ async def cmd_users(ctx, user_manager: UserManager) -> str:
     return f"**Registered Users ({len(users)}):**\n" + "\n".join(lines)
 
 
-async def cmd_unregister(ctx, user_manager: UserManager) -> str:
+async def cmd_unregister(message, user_manager: UserManager) -> str:
     """!unregister - Remove your credentials from the bot"""
-    if not user_manager.has_user(str(ctx.author.id)):
+    if not user_manager.has_user(str(message.author.id)):
         return "You're not registered."
 
-    user_manager.remove_user(str(ctx.author.id))
+    user_manager.remove_user(str(message.author.id))
     return "Your credentials have been removed from the bot."
-
-
-# Import discord after defining functions that need it
-import discord
