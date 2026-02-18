@@ -13,6 +13,7 @@ import discord
 from pathlib import Path as _Path
 from datetime import datetime, timezone
 from typing import Any, Coroutine
+from typing import Any, Coroutine
 from rustplus import RustError
 from server_manager import ServerManager
 from timers import timer_manager
@@ -112,7 +113,7 @@ _switches: dict = _load_switches()
 
 
 # ── Router ────────────────────────────────────────────────────────────────────
-async def handle_query(query: str, manager: ServerManager) -> str | tuple:
+async def handle_query(query: str, manager: ServerManager, ctx=None) -> str | tuple:
     """Returns a str response, or a tuple (str, bytes) where bytes is a JPEG image."""
     parts = query.strip().split(None, 1)
     cmd   = parts[0].lower()
@@ -196,7 +197,7 @@ async def cmd_switch(identifier: str, manager: ServerManager) -> str:
 
 def cmd_help() -> str:
     return (
-        "**Rust+ Companion Bot** — prefix: `!rust`\n\n"
+        "**Rust+ Companion Bot** — prefix: `!`\n\n"
         "**Server Info:**\n"
         "`status` · `players` · `pop` · `time` · `map` · `wipe` · `uptime`\n\n"
         "**Team:**\n"
@@ -935,4 +936,3 @@ def _fmt_elapsed(seconds: int) -> str:
 def _time_till(now: float, target: float) -> str:
     diff = (target - now) % 24
     real_minutes = int(diff * 2.5)
-    return f"~{real_minutes}m"
