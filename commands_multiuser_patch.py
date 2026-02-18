@@ -81,7 +81,7 @@ async def handle_query(
         if not discord_id or not user_manager.has_user(discord_id):
             return (
                 "You need to register first.\n"
-                "DM the bot with `!register` and attach your `rustplus.py.config.json` file.\n"
+                "DM the bot with `!register` and attach your `rustplus.config.json` file.\n"
                 "Get the config file by running `pair.bat` on your computer."
             )
 

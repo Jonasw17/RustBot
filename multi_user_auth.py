@@ -77,7 +77,7 @@ class UserManager:
             discord_id: Discord user ID (str)
             discord_name: Discord username for display
             steam_id: Steam ID from their Rust+ pairing
-            fcm_creds: Their FCM credentials from rustplus.py.config.json
+            fcm_creds: Their FCM credentials from rustplus.config.json
         """
         try:
             self._users[discord_id] = {
@@ -157,7 +157,7 @@ async def cmd_register(message, user_manager: UserManager) -> str:
     """
     !register
 
-    DM the bot with this command along with your rustplus.py.config.json file.
+    DM the bot with this command along with your rustplus.config.json file.
     Bot will parse it and register your account.
 
     Args:
@@ -168,7 +168,7 @@ async def cmd_register(message, user_manager: UserManager) -> str:
     if not isinstance(message.channel, discord.DMChannel):
         return (
             "Please use this command in a **DM with the bot** for security.\n"
-            "Send `!register` along with your `rustplus.py.config.json` file attachment."
+            "Send `!register` along with your `rustplus.config.json` file attachment."
         )
 
     # Check for attachment
@@ -184,7 +184,7 @@ async def cmd_register(message, user_manager: UserManager) -> str:
 
     attachment = message.attachments[0]
     if not attachment.filename.endswith('.json'):
-        return "Please send a JSON file (rustplus.py.config.json)"
+        return "Please send a JSON file (rustplus.config.json)"
 
     try:
         # Download and parse the FCM config
