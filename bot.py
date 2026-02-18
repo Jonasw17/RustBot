@@ -301,18 +301,32 @@ async def on_message(message: discord.Message):
         return
 
     content_lower = message.content.lower()
+    is_command = content_lower.startswith(COMMAND_PREFIX)
 
-    # Chat relay: forward Discord → Rust
+    # !clear works in every channel — handle it before any channel gating
+    if is_command:
+        parts = message.content[len(COMMAND_PREFIX):].strip().split(None, 1)
+        if parts and parts[0].lower() == "clear":
+            args = parts[1].strip() if len(parts) > 1 else ""
+            log.info(f"[{message.author}] !clear {args} in #{message.channel.name}")
+            async with message.channel.typing():
+                from commands import cmd_clear
+                response = await cmd_clear(args, message)
+            if response is not None:
+                await message.reply(response)
+            return
+
+    # Chat relay channel: forward Discord → Rust (non-commands only)
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
-        if not content_lower.startswith(COMMAND_PREFIX):
+        if not is_command:
             await _relay_discord_to_rust(message)
         return
 
-    if not content_lower.startswith(COMMAND_PREFIX):
+    if not is_command:
         await bot.process_commands(message)
         return
 
-    # Ignore ! commands outside the command channel
+    # Ignore other ! commands outside the command channel
     if COMMAND_CHANNEL and message.channel.id != COMMAND_CHANNEL:
         return
 
