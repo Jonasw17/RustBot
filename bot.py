@@ -330,8 +330,9 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    # Ignore commands outside command channel (except DMs for registration)
-    if COMMAND_CHANNEL and message.channel.id != COMMAND_CHANNEL:
+    # Ignore commands outside allowed channels (COMMAND, NOTIFICATION, CHAT_RELAY), except DMs for registration
+    allowed_channel_ids = {cid for cid in (COMMAND_CHANNEL, NOTIFICATION_CHANNEL, CHAT_RELAY_CHANNEL) if cid}
+    if allowed_channel_ids and message.channel.id not in allowed_channel_ids:
         # Allow DM commands for registration
         if not isinstance(message.channel, discord.DMChannel):
             return

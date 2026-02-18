@@ -37,8 +37,11 @@ async def cmd_clear(args: str, ctx) -> str | None:
     if ctx is None:
         return "Clear command only works from Discord (not in-game)."
 
-    # Check if user has manage messages permission
-    if not ctx.channel.permissions_for(ctx.author).manage_messages:
+    # If this is a DM channel, allow user to clear bot responses there without Manage Messages perm
+    is_dm = isinstance(ctx.channel, discord.DMChannel)
+
+    # Check if user has manage messages permission (only required in guild channels)
+    if not is_dm and not ctx.channel.permissions_for(ctx.author).manage_messages:
         return "You need **Manage Messages** permission to use this command."
 
     # Parse arguments
@@ -57,17 +60,56 @@ async def cmd_clear(args: str, ctx) -> str | None:
             return "Usage: `!clear [amount]` or `!clear all`\nExample: `!clear 50`"
 
     try:
-        # Delete messages (including the command message)
-        deleted = await ctx.channel.purge(limit=amount + 1)
+        if is_dm:
+            # Delete bot messages in this DM channel up to `amount`
+            deleted_count = 0
+            # Walk recent history; gather bot messages
+            to_delete = []
+            async for m in ctx.channel.history(limit=1000):
+                if m.author and m.author.bot:
+                    to_delete.append(m)
+                    if len(to_delete) >= amount:
+                        break
 
-        # Send confirmation message that self-deletes after 5 seconds
-        confirmation = await ctx.channel.send(
-            f"Cleared **{len(deleted) - 1}** message(s)."
-        )
-        await asyncio.sleep(5)
-        await confirmation.delete()
+            for m in to_delete:
+                try:
+                    await m.delete()
+                    deleted_count += 1
+                except Exception:
+                    # ignore individual deletion failures
+                    pass
 
-        return None  # Don't send another message since we already sent confirmation
+            # Delete the invoking command message if possible
+            try:
+                await ctx.delete()
+            except Exception:
+                pass
+
+            # Send confirmation message that self-deletes after 5 seconds
+            confirmation = await ctx.channel.send(
+                f"Cleared **{deleted_count}** message(s)."
+            )
+            await asyncio.sleep(5)
+            try:
+                await confirmation.delete()
+            except Exception:
+                pass
+
+            return None  # already informed the user
+
+        else:
+            # Delete messages (including the command message) in a guild channel
+            deleted = await ctx.channel.purge(limit=amount + 1)
+
+            # Send confirmation message that self-deletes after 5 seconds
+            confirmation = await ctx.channel.send(
+                f"Cleared **{len(deleted) - 1}** message(s)."
+            )
+            await asyncio.sleep(5)
+            await confirmation.delete()
+
+            return None  # Don't send another message since we already sent confirmation
+
     except discord.Forbidden:
         return "Bot lacks **Manage Messages** permission in this channel."
     except discord.HTTPException as e:

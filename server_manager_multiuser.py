@@ -145,7 +145,7 @@ class MultiUserServerManager:
         class UserPairingListener(FCMListener):
             def on_notification(self_inner, obj, notification, data_message):
                 try:
-                    log.info(f"[DEBUG] on_notification called for {user['discord_name']}")
+                    log.debug(f"[DEBUG] on_notification called for {user['discord_name']}")
 
                     # Attempt to extract 'data' from multiple possible locations/shapes.
                     data = {}
@@ -337,7 +337,7 @@ class MultiUserServerManager:
                                     continue
 
                             if found:
-                                log.info('[DEBUG] Found JSON pairing payload in raw message; proceeding')
+                                log.debug('[DEBUG] Found JSON pairing payload in raw message; proceeding')
                                 body = found
                                 body_from_fallback = True
                                 # proceed to process body (skip channelId check)
@@ -351,6 +351,7 @@ class MultiUserServerManager:
                     # Directly extract channel ID and body when available from `notification` or DataMessageStanza.app_data
                     channel_id = None
                     body_str = None
+                    body_source = 'unknown'
 
                     try:
                         # Prefer explicit notification dict fields
@@ -450,19 +451,19 @@ class MultiUserServerManager:
 
                     # Now parse the body string if we haven't already
                     if not body and body_str:
-                        log.info(f"[DEBUG] Channel ID: {channel_id}")
-                        log.info(f"[DEBUG] Body string length: {len(body_str) if hasattr(body_str, '__len__') else 'N/A'}")
-                        log.info(f"[DEBUG] Body source: {body_source if 'body_source' in locals() else 'unknown'}")
+                        log.debug(f"[DEBUG] Channel ID: {channel_id}")
+                        log.debug(f"[DEBUG] Body string length: {len(body_str) if hasattr(body_str, '__len__') else 'N/A'}")
+                        log.debug(f"[DEBUG] Body source: {body_source if 'body_source' in locals() else 'unknown'}")
                         try:
                             body = json.loads(body_str)
-                            log.info(f"[DEBUG] Parsed body successfully, type: {body.get('type')}")
+                            log.debug(f"[DEBUG] Parsed body successfully, type: {body.get('type')}")
                         except Exception as e:
                             log.error(f"[DEBUG] JSON parse failed: {e}")
                             return
                     elif not body:
                         # No body found, continue with earlier behavior (will likely skip)
-                        log.info(f"[DEBUG] Channel ID: {channel_id}")
-                        log.info("[DEBUG] No body string extracted")
+                        log.debug(f"[DEBUG] Channel ID: {channel_id}")
+                        log.debug("[DEBUG] No body string extracted")
                         # Show debug info about candidates
                         try:
                             if isinstance(data, dict):
@@ -488,7 +489,7 @@ class MultiUserServerManager:
                     # Decide whether to proceed: accept if explicit type 'server', channelId == 'pairing',
                     # or body contains the required fields (ip + player token/id).
                     if body_type == "server" or channel_id == "pairing" or has_required_fields:
-                        log.info(f"[DEBUG] Processing pairing: body_type={body_type}, channel_id={channel_id}, has_required_fields={has_required_fields}")
+                        log.debug(f"[DEBUG] Processing pairing: body_type={body_type}, channel_id={channel_id}, has_required_fields={has_required_fields}")
                     else:
                         # Provide an INFO-level dump of the raw message shapes so operators
                         # can see why channelId is missing even when DEBUG is not enabled.
@@ -502,12 +503,12 @@ class MultiUserServerManager:
                                     return r[:max_len] + "..."
                                 return r
 
-                            log.info(f"[DEBUG] Not a server notification (body_type={body_type}), channel {channel_id} != 'pairing', required_fields={has_required_fields}; skipping")
-                            log.info(f"[RAW] obj type={type(obj).__name__} repr={_short_repr(obj)}")
-                            log.info(f"[RAW] notification type={type(notification).__name__} repr={_short_repr(notification)}")
-                            log.info(f"[RAW] data_message type={type(data_message).__name__} repr={_short_repr(data_message)}")
+                            log.debug(f"[DEBUG] Not a server notification (body_type={body_type}), channel {channel_id} != 'pairing', required_fields={has_required_fields}; skipping")
+                            log.debug(f"[RAW] obj type={type(obj).__name__} repr={_short_repr(obj)}")
+                            log.debug(f"[RAW] notification type={type(notification).__name__} repr={_short_repr(notification)}")
+                            log.debug(f"[RAW] data_message type={type(data_message).__name__} repr={_short_repr(data_message)}")
                         except Exception as e:
-                            log.info(f"[DEBUG] Skipping and failed to dump raw content: {e}")
+                            log.debug(f"[DEBUG] Skipping and failed to dump raw content: {e}")
                         return
 
                     # Extract server info
@@ -516,7 +517,7 @@ class MultiUserServerManager:
                     name = body.get("name", ip)
                     player_token = int(body.get("playerToken", 0))
 
-                    log.info(f"[DEBUG] Parsed server: {name} ({ip}:{port}), token: {player_token}")
+                    log.debug(f"[DEBUG] Parsed server: {name} ({ip}:{port}), token: {player_token}")
 
                     if not ip or not player_token:
                         log.warning(f"[DEBUG] Missing data - IP: {ip}, Token: {player_token}")
@@ -525,7 +526,7 @@ class MultiUserServerManager:
                     log.info(f"Server paired by {user['discord_name']}: {name}")
 
                     # Add server to user's account
-                    log.info(f"[DEBUG] Adding server to user account...")
+                    log.debug(f"[DEBUG] Adding server to user account...")
                     result = user_manager.add_user_server(
                         discord_id,
                         ip,
@@ -533,27 +534,27 @@ class MultiUserServerManager:
                         name,
                         player_token
                     )
-                    log.info(f"[DEBUG] add_user_server returned: {result}")
+                    log.debug(f"[DEBUG] add_user_server returned: {result}")
 
                     # Auto-connect and notify
                     async def _connect_and_notify():
                         try:
-                            log.info(f"[DEBUG] Starting auto-connect...")
+                            log.debug(f"[DEBUG] Starting auto-connect...")
                             socket = await self.connect_for_user(discord_id, ip, port)
-                            log.info(f"[DEBUG] Connected, calling callback...")
+                            log.debug(f"[DEBUG] Connected, calling callback...")
                             await callback(discord_id, {
                                 "ip": ip,
                                 "port": port,
                                 "name": name,
                                 "player_token": player_token
                             })
-                            log.info(f"[DEBUG] Callback completed")
+                            log.debug(f"[DEBUG] Callback completed")
                         except Exception as e:
                             log.error(f"Post-pairing connection failed: {e}", exc_info=True)
 
-                    log.info(f"[DEBUG] Scheduling async connection...")
+                    log.debug(f"[DEBUG] Scheduling async connection...")
                     asyncio.run_coroutine_threadsafe(_connect_and_notify(), loop)
-                    log.info(f"[DEBUG] Async task scheduled")
+                    log.debug(f"[DEBUG] Async task scheduled")
 
                 except Exception as e:
                     log.error(f"FCM listener error: {e}", exc_info=True)
