@@ -16,6 +16,7 @@ from pathlib import Path as _Path
 from datetime import datetime, timezone
 from rustplus import RustError
 from typing import Optional
+from bot import build_server_status_embed
 
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
@@ -681,10 +682,10 @@ def cmd_price(args: str) -> str:
 
 
 #  Live Command Dispatcher
-async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tuple:
+async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tuple | discord.Embed:
     name = active.get("name", active["ip"])
 
-    if cmd in ("status", "info"):   return await _cmd_status(socket, name)
+    if cmd in ("status", "info"):   return await _cmd_status(socket, active)
     if cmd in ("players", "pop"):   return await _cmd_players(socket, name)
     if cmd == "online":             return await _cmd_online(socket)
     if cmd == "offline":            return await _cmd_offline(socket)
@@ -711,19 +712,19 @@ async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tup
     if cmd == "cctv":               return _cmd_cctv(args)
     return "Unknown command."
 
-
-async def _cmd_status(socket, name: str) -> str:
-    info = await socket.get_info()
-    if isinstance(info, RustError):
-        return f"Error: {info.reason}"
-    queued = f" ({info.queued_players} queued)" if info.queued_players else ""
-    return (
-        f"**{name}**\n"
-        f"> **Players:** {info.players}/{info.max_players}{queued}\n"
-        f"> **Map:** {info.map}  |  **Size:** {info.size}  |  **Seed:** `{info.seed}`\n"
-        f"> **Wipe:** {_fmt_ts(info.wipe_time)}"
-    )
-
+async def _cmd_status(socket, active: dict) -> discord.Embed:
+    """Get server status - returns rich embed"""
+    try:
+        embed = await build_server_status_embed(active, socket, user_info=None)
+        return embed
+    except Exception as e:
+        log.error(f"Status command error: {e}")
+        embed = discord.Embed(
+            title=f" {active.get('name', active['ip'])}",
+            description=f"Error fetching status: {str(e)[:100]}",
+            color=0xFFA500
+        )
+        return embed
 
 async def _cmd_players(socket, name: str) -> str:
     info = await socket.get_info()

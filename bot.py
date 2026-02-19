@@ -647,8 +647,9 @@ async def on_message(message: discord.Message):
             log.error(f"Command error: {e}", exc_info=True)
             response = f"⚠️ Error: `{e}`"
 
-    # Handle text or (text, image) response
+    # Handle different response types
     if isinstance(response, tuple):
+        # Map command - (text, image)
         text, img_bytes = response
         try:
             file = discord.File(io.BytesIO(img_bytes), filename="map.jpg")
@@ -656,7 +657,11 @@ async def on_message(message: discord.Message):
         except Exception as e:
             log.error(f"Could not send map image: {e}")
             await message.reply(text)
+    elif isinstance(response, discord.Embed):
+        # Status command - embed
+        await message.reply(embed=response)
     else:
+        # Regular text response
         for chunk in _split(response):
             await message.reply(chunk)
 
