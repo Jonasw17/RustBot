@@ -199,7 +199,7 @@ async def cmd_smart_switch(
     # Get active server
     active = manager.get_active_server_for_user(discord_id)
     if not active:
-        return "No server connected. Use `!switch <server>` to connect first."
+        return "No server connected. Use `!change <server>` to connect first."
 
     # Get socket
     socket = manager.get_socket_for_user(discord_id)
@@ -281,8 +281,8 @@ async def handle_query(
         return cmd_servers(manager, user_manager, discord_id)
     if cmd == "clear":
         return await cmd_clear(args, ctx)
-    if cmd == "switch":
-        return await cmd_switch(args, manager, user_manager, discord_id)
+    if cmd == "change":
+        return await cmd_change_server(args, manager, user_manager, discord_id)
     if cmd == "help":
         return cmd_help()
     if cmd in ("timer", "timers"):
@@ -380,10 +380,10 @@ def cmd_servers(
         lines.append(f"{tag} **{s.get('name', s['ip'])}** â€” `{s['ip']}:{s['port']}`")
 
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
-        "\n\nUse `!switch <name or number>` to switch."
+        "\n\nUse `!change <name or number>` to switch."
 
 
-async def cmd_switch(
+async def cmd_change_server(
         identifier: str,
         manager: MultiUserServerManager,
         user_manager: UserManager,
@@ -391,7 +391,7 @@ async def cmd_switch(
 ) -> str:
     """Switch user's active server"""
     if not identifier:
-        return "Usage: `!switch <server name or number>`"
+        return "Usage: `!change <server name or number>`"
 
     if not discord_id or not user_manager.has_user(discord_id):
         return "You need to register first. DM the bot with `!register`"
@@ -459,7 +459,7 @@ async def cmd_smart_items(
 
     active = manager.get_active_server_for_user(discord_id)
     if not active:
-        return "No server connected. Use `!switch <server>` to connect to a server first."
+        return "No server connected. Use `!change <server>` to connect to a server first."
 
     server_key = f"{active['ip']}:{active['port']}"
     user_switches = {k: v for k, v in _switches.items() if k.startswith(f"{discord_id}_{server_key}_")}
@@ -519,7 +519,7 @@ async def cmd_add_switch(
 
     active = manager.get_active_server_for_user(discord_id)
     if not active:
-        return "No server connected. Use `!switch <server>` to connect first."
+        return "No server connected. Use `!change <server>` to connect first."
 
     # Store with user and server prefix to keep switches separate
     server_key = f"{active['ip']}:{active['port']}"
