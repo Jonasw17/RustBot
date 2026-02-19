@@ -1,9 +1,3 @@
-"""
-server_manager_multiuser.py - DEBUG VERSION
-────────────────────────────────────────────────────────────────────────────
-Enhanced logging to debug pairing issues
-"""
-
 import asyncio
 import json
 import logging
@@ -582,7 +576,7 @@ class MultiUserServerManager:
         for discord_id in self.user_manager._users.keys():
             await self.start_fcm_listener_for_user(discord_id, callback)
 
-    # ── Server Switching ──────────────────────────────────────────────────────
+    # -- Server Switching -------------------------------
     async def switch_server_for_user(self, discord_id: str, identifier: str) -> Optional[dict]:
         user = self.user_manager.get_user(discord_id)
         if not user:

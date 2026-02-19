@@ -1,6 +1,4 @@
 """
-chat_relay.py  [REWRITTEN for multi-server support]
-────────────────────────────────────────────────────────────────────────────
 Polls in-game team chat and forwards messages to a Discord channel.
 Also handles the Discord → Rust direction (see bot.py).
 

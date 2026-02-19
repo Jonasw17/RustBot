@@ -1,11 +1,3 @@
-"""
-commands.py
-
-All !command handlers - MULTI-USER ONLY architecture.
-
-All old single-user code removed.
-"""
-
 import asyncio
 import io
 import logging
@@ -16,7 +8,7 @@ from pathlib import Path as _Path
 from datetime import datetime, timezone
 from rustplus import RustError
 from typing import Optional
-from bot import build_server_status_embed
+from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
 
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
