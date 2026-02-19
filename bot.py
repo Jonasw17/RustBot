@@ -16,7 +16,7 @@ from commands import handle_query
 from timers import timer_manager
 from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config -------------------------------
 load_dotenv()
 
 DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
@@ -25,7 +25,7 @@ NOTIFICATION_CHANNEL = int(os.getenv("NOTIFICATION_CHANNEL_ID", "0"))
 CHAT_RELAY_CHANNEL   = int(os.getenv("CHAT_RELAY_CHANNEL_ID", "0"))
 COMMAND_PREFIX       = "!"
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging -------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -37,7 +37,7 @@ log = logging.getLogger("RustBot")
 rustplus_logger = logging.getLogger("rustplus")
 rustplus_logger.setLevel(logging.WARNING)
 
-# ── Discord Client ────────────────────────────────────────────────────────────
+# -- Discord Client -------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True
@@ -191,6 +191,7 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Auto-connecting to {server['name']} (1 user, 1 server)")
                 await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                await asyncio.sleep(3)
                 await update_status_message(discord_id)
                 return True
             except Exception as e:
@@ -206,6 +207,7 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Reconnecting to last server for user {discord_id}: {active_server['name']}")
                 await manager.connect_for_user(discord_id, active_server['ip'], active_server['port'])
+                await asyncio.sleep(3)
                 await update_status_message(discord_id)
                 reconnected = True
             except Exception as e:
@@ -218,6 +220,7 @@ async def auto_connect_single_user_server():
                 try:
                     log.info(f"Connecting to first available server for user {discord_id}: {server['name']}")
                     await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                    await asyncio.sleep(3)
                     await update_status_message(discord_id)
                     reconnected = True
                 except Exception as e:
@@ -276,7 +279,7 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
     return "⚠️ Command execution failed after multiple attempts."
 
 
-# ── Notification helper ───────────────────────────────────────────────────────
+# -- Notification helper -------------------------------
 async def notify(embed: discord.Embed, file: discord.File = None):
     """Send an embed (optionally with a file) to the notification channel."""
     if not NOTIFICATION_CHANNEL:
@@ -291,7 +294,7 @@ async def notify(embed: discord.Embed, file: discord.File = None):
         log.warning(f"Notification channel {NOTIFICATION_CHANNEL} not found")
 
 
-# ── Events ────────────────────────────────────────────────────────────────────
+# -- Events -------------------------------
 @bot.event
 async def on_ready():
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -387,7 +390,7 @@ async def _on_timer_expired(label: str, text: str):
     await notify(embed)
 
 
-# ── In-game → Discord ─────────────────────────────────────────────────────────
+# -- In-game → Discord -------------------------------
 async def _on_rust_chat_message(event):
     """Callback fired when team chat message arrives in-game"""
     if not CHAT_RELAY_CHANNEL:
@@ -454,7 +457,7 @@ async def _handle_ingame_command(query: str, player_name: str):
         log.error(f"In-game command error: {e}")
 
 
-# ── Message Handler ───────────────────────────────────────────────────────────
+# -- Message Handler -------------------------------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -542,7 +545,7 @@ async def on_message(message: discord.Message):
             await message.reply(chunk)
 
 
-# ── Discord → In-game ─────────────────────────────────────────────────────────
+# -- Discord → In-game -------------------------------
 async def _relay_discord_to_rust(message: discord.Message):
     """Forward Discord message to in-game team chat"""
     # Try to find an active socket
@@ -559,7 +562,7 @@ async def _relay_discord_to_rust(message: discord.Message):
     log.warning("Discord->Rust relay skipped: no active sockets")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------
 def _split(text: str, limit: int = 1990) -> list[str]:
     """Split long messages into Discord-friendly chunks"""
     if len(text) <= limit:
@@ -575,7 +578,7 @@ def _split(text: str, limit: int = 1990) -> list[str]:
     return chunks
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# -- Run -------------------------------
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_TOKEN not set in .env — see README")

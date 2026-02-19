@@ -63,7 +63,7 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
         time_obj = await asyncio.wait_for(socket.get_time(), timeout=10.0)
 
         if isinstance(info, RustError) or isinstance(time_obj, RustError):
-            raise Exception("Failed to fetch server info")
+            raise Exception("Failed to fetch server info - Maybe it got wiped!")
 
         # Calculate wipe age
         wipe_ts = getattr(info, "wipe_time", 0) or 0
@@ -79,7 +79,7 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
         now_ig = _parse_time_to_float(time_obj.time)
         sunset = _parse_time_to_float(time_obj.sunset)
         sunrise = _parse_time_to_float(time_obj.sunrise)
-        
+
         is_day = sunrise <= now_ig < sunset
         if is_day:
             diff_h = (sunset - now_ig) % 24
@@ -100,7 +100,7 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
         embed.add_field(name="Players", value=players, inline=True)
         embed.add_field(name="Time", value=f"{phase_emoji} {_fmt_time_val(time_obj.time)}", inline=True)
         embed.add_field(name="Next Phase", value=next_change, inline=True)
-        
+
         embed.add_field(name="Since Wipe", value=f"{wipe_days:.1f} days", inline=True)
         embed.add_field(name="Map", value=f"{info.map} ({info.size})", inline=True)
         embed.add_field(name="Seed", value=f"`{info.seed}`", inline=True)
