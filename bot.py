@@ -293,12 +293,40 @@ async def notify(embed: discord.Embed, file: discord.File = None):
     else:
         log.warning(f"Notification channel {NOTIFICATION_CHANNEL} not found")
 
+async def _clear_bot_channels():
+    """Clear all messages in bot channels on startup"""
+    channels_to_clear = [
+        (NOTIFICATION_CHANNEL, "notification"),
+        (COMMAND_CHANNEL, "command"),
+        (CHAT_RELAY_CHANNEL, "chat relay")
+    ]
+
+    for channel_id, channel_name in channels_to_clear:
+        if not channel_id:
+            continue
+
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            log.warning(f"{channel_name.title()} channel {channel_id} not found")
+            continue
+
+        try:
+            log.info(f"Clearing {channel_name} channel...")
+            deleted = await channel.purge(limit=100)
+            log.info(f"Cleared {len(deleted)} message(s) from {channel_name} channel")
+        except discord.Forbidden:
+            log.error(f"Bot lacks permissions to clear {channel_name} channel")
+        except discord.HTTPException as e:
+            log.error(f"Failed to clear {channel_name} channel: {e}")
 
 # -- Events -------------------------------
 @bot.event
 async def on_ready():
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     _log_channel_config()
+
+    if NOTIFICATION_CHANNEL or COMMAND_CHANNEL or CHAT_RELAY_CHANNEL:
+        await _clear_bot_channels()
 
     # Register chat relay callback
     if CHAT_RELAY_CHANNEL:
@@ -319,7 +347,7 @@ async def on_ready():
     if user_count == 0:
         log.info("No users registered yet")
         await notify(discord.Embed(
-            title="Bot Online - Multi-User Mode",
+            title="Bot Online",
             description=(
                 "No users registered yet.\n\n"
                 "**To register:**\n"
@@ -330,7 +358,7 @@ async def on_ready():
             color=0xCE422B,
         ))
     else:
-        log.info(f"✅ {user_count} user(s) registered")
+        log.info(f" {user_count} user(s) registered")
 
         # Auto-connect to servers
         await asyncio.sleep(2)  # Brief delay for stability
@@ -338,14 +366,14 @@ async def on_ready():
 
         if reconnected:
             await notify(discord.Embed(
-                title="Bot Online - Multi-User Mode",
-                description=f"**{user_count}** user(s) registered\n✅ Auto-connected to servers",
+                title="Bot Online",
+                description=f"**{user_count}** user(s) registered\n Auto-connected to servers",
                 color=0x00FF00,
             ))
             bot.loop.create_task(server_status_loop())
         else:
             await notify(discord.Embed(
-                title="Bot Online - Multi-User Mode",
+                title="Bot Online",
                 description=(
                     f"**{user_count}** user(s) registered\n"
                     f"No active servers - pair one in-game"
@@ -469,7 +497,7 @@ async def on_message(message: discord.Message):
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
         if not content_lower.startswith(COMMAND_PREFIX):
             await _relay_discord_to_rust(message)
-        return
+            return
 
     if not content_lower.startswith(COMMAND_PREFIX):
         await bot.process_commands(message)
@@ -477,8 +505,9 @@ async def on_message(message: discord.Message):
 
     # Ignore commands outside command channel (except DMs)
     if COMMAND_CHANNEL and message.channel.id != COMMAND_CHANNEL:
-        if not isinstance(message.channel, discord.DMChannel):
-            return
+        if not (CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL):
+            if not isinstance(message.channel, discord.DMChannel):
+                return
 
     query = message.content[len(COMMAND_PREFIX):].strip()
     log.info(f"[{message.author}] ! {query or '(empty)'}")

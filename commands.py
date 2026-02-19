@@ -318,16 +318,20 @@ async def handle_query(
         # Check user registration
         if not discord_id or not user_manager.has_user(discord_id):
             return (
-                "You need to register first.\n"
-                "DM the bot with `!register` and attach your `rustplus.config.json` file."
+                "**Not registered**\n"
+                "This command requires a Rust+ connection.\n\n"
+                "DM the bot with `!register <steam_id>` and attach your `rustplus.config.json` file."
             )
-
         # Get user's active server
         active = manager.get_active_server_for_user(discord_id)
         if not active:
             return (
                 "No server connected.\n"
-                "Join a Rust server and press **ESC â†’ Rust+ â†’ Pair Server**."
+                "This command requires an active Rust+ connection.\n\n"
+                "**To connect:**\n"
+                "1. Join any Rust server in-game\n"
+                "2. Press **ESC -> Rust+ -> Pair Server**\n"
+                "3. The bot will auto-connect to your server"
             )
 
         try:
@@ -363,14 +367,14 @@ def cmd_servers(
     if not servers:
         return (
             "**No servers paired yet.**\n"
-            "Join any Rust server and press **ESC â†’ Rust+ â†’ Pair Server**."
+            "Join any Rust server and press **ESC -> Rust+ -> Pair Server**."
         )
 
     lines = []
     for i, s in enumerate(servers, 1):
         is_active = active and s["ip"] == active["ip"] and s["port"] == active["port"]
         tag = "`active`" if is_active else f"`{i}.`"
-        lines.append(f"{tag} **{s.get('name', s['ip'])}** â€” `{s['ip']}:{s['port']}`")
+        lines.append(f"{tag} **{s.get('name', s['ip'])}** `{s['ip']}:{s['port']}`")
 
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
         "\n\nUse `!change <name or number>` to switch."
