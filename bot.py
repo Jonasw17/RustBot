@@ -1,15 +1,3 @@
-"""
-bot.py - Multi-User Rust+ Discord Bot
-────────────────────────────────────────────────────────────────────────────
-FEATURES:
-✅ Multi-user architecture only (no single-user code)
-✅ Auto-switch to server when only 1 user + 1 server
-✅ Auto-reconnect to last server on bot restart
-✅ Connection health monitoring
-✅ Command retry logic
-✅ Per-user connection management
-"""
-
 import asyncio
 import io
 import os
@@ -26,8 +14,9 @@ from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cm
 from server_manager_multiuser import MultiUserServerManager
 from commands import handle_query
 from timers import timer_manager
+from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# -- Config -------------------------------
 load_dotenv()
 
 DISCORD_TOKEN        = os.getenv("DISCORD_TOKEN")
@@ -37,7 +26,7 @@ CHAT_RELAY_CHANNEL   = int(os.getenv("CHAT_RELAY_CHANNEL_ID", "0"))
 COMMAND_PREFIX       = "!"
 VOICE_CHANNEL_ID     = int(os.getenv("VOICE_CHANNEL_ID", "0"))
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging -------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -49,7 +38,7 @@ log = logging.getLogger("RustBot")
 rustplus_logger = logging.getLogger("rustplus")
 rustplus_logger.setLevel(logging.WARNING)
 
-# ── Discord Client ────────────────────────────────────────────────────────────
+# -- Discord Client -------------------------------
 intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True
@@ -71,13 +60,92 @@ except Exception as e:
 # Dict to track background monitoring tasks per server key (ip:port)
 _voice_monitor_tasks: dict = {}
 
-# ── Connection Health Tracking ────────────────────────────────────────────────
+# -- Connection Health Tracking -------------------------------
+# -- Connection Health Tracking -------------------------------
 _connection_health = {
     "last_successful_command": {},  # discord_id -> timestamp
     "reconnect_attempts": {},        # discord_id -> count
     "max_reconnect_attempts": 3
 }
 
+# -- Server Status Message Tracking -------------------------------
+_status_messages = {}  # discord_id -> {"message_id": int, "server": dict, "last_update": float}
+
+
+async def update_status_message(discord_id: str):
+    """Update or create status message for a user's active server"""
+    if not NOTIFICATION_CHANNEL:
+        return
+
+    # Get user's active connection
+    socket = manager.get_socket_for_user(discord_id)
+    server = manager.get_active_server_for_user(discord_id)
+
+    if not socket or not server:
+        # Clean up status message if no longer connected
+        if discord_id in _status_messages:
+            del _status_messages[discord_id]
+        return
+
+    user_info = user_manager.get_user(discord_id)
+    channel = bot.get_channel(NOTIFICATION_CHANNEL)
+
+    if not channel:
+        return
+
+    # Build the embed
+    embed = await build_server_status_embed(server, socket, user_info)
+
+    # Check if we have an existing message
+    status_data = _status_messages.get(discord_id)
+
+    if status_data and status_data.get("message_id"):
+        # Try to update existing message
+        try:
+            message = await channel.fetch_message(status_data["message_id"])
+            await message.edit(embed=embed)
+            status_data["last_update"] = time.time()
+            log.debug(f"Updated status message for {user_info.get('discord_name', discord_id)}")
+            return
+        except discord.NotFound:
+            log.info(f"Status message deleted, creating new one for {user_info.get('discord_name', discord_id)}")
+        except discord.HTTPException as e:
+            log.warning(f"Failed to update status message: {e}")
+
+    # Create new message
+    try:
+        message = await channel.send(embed=embed)
+        _status_messages[discord_id] = {
+            "message_id": message.id,
+            "server": server,
+            "last_update": time.time()
+        }
+        log.info(f"Created status message for {user_info.get('discord_name', discord_id)}")
+    except discord.HTTPException as e:
+        log.error(f"Failed to create status message: {e}")
+
+async def server_status_loop():
+    """Background task that updates all status messages every 45 seconds"""
+    await bot.wait_until_ready()
+    log.info("Server status loop started")
+
+    while not bot.is_closed():
+        try:
+            # Update status for all users with active connections
+            for discord_id in list(_status_messages.keys()):
+                socket = manager.get_socket_for_user(discord_id)
+                if socket:
+                    await update_status_message(discord_id)
+                else:
+                    # Clean up if no longer connected
+                    del _status_messages[discord_id]
+
+        except Exception as e:
+            log.error(f"Status update loop error: {e}")
+
+        await asyncio.sleep(45)
+
+#  ----- Connection Health Check and Auto-Reconnect ---------------------
 
 async def check_connection_health(discord_id: str) -> bool:
     """Monitor connection health and reconnect if needed"""
@@ -135,6 +203,8 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Auto-connecting to {server['name']} (1 user, 1 server)")
                 await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                await asyncio.sleep(3)
+                await update_status_message(discord_id)
                 return True
             except Exception as e:
                 log.error(f"Auto-connect failed: {e}")
@@ -149,6 +219,8 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Reconnecting to last server for user {discord_id}: {active_server['name']}")
                 await manager.connect_for_user(discord_id, active_server['ip'], active_server['port'])
+                await asyncio.sleep(3)
+                await update_status_message(discord_id)
                 reconnected = True
             except Exception as e:
                 log.warning(f"Failed to reconnect user {discord_id}: {e}")
@@ -160,6 +232,8 @@ async def auto_connect_single_user_server():
                 try:
                     log.info(f"Connecting to first available server for user {discord_id}: {server['name']}")
                     await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                    await asyncio.sleep(3)
+                    await update_status_message(discord_id)
                     reconnected = True
                 except Exception as e:
                     log.warning(f"Failed to connect user {discord_id}: {e}")
@@ -217,7 +291,7 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
     return "⚠️ Command execution failed after multiple attempts."
 
 
-# ── Notification helper ───────────────────────────────────────────────────────
+# -- Notification helper -------------------------------
 async def notify(embed: discord.Embed, file: discord.File = None):
     """Send an embed (optionally with a file) to the notification channel."""
     if not NOTIFICATION_CHANNEL:
@@ -231,109 +305,40 @@ async def notify(embed: discord.Embed, file: discord.File = None):
     else:
         log.warning(f"Notification channel {NOTIFICATION_CHANNEL} not found")
 
+async def _clear_bot_channels():
+    """Clear all messages in bot channels on startup"""
+    channels_to_clear = [
+        (NOTIFICATION_CHANNEL, "notification"),
+        (COMMAND_CHANNEL, "command"),
+        (CHAT_RELAY_CHANNEL, "chat relay")
+    ]
 
-# ── Parse Time helper ─────────────────────────────────────────────────────────
-def _parse_time_to_float(t) -> float:
-    """Convert time from string ('19:21') or float (19.35) to float."""
-    try:
-        if isinstance(t, str) and ":" in t:
-            parts = t.split(":")
-            h = int(parts[0])
-            m = int(parts[1]) if len(parts) > 1 else 0
-            return h + (m / 60.0)
-        return float(t)
-    except Exception:
-        return 0.0
+    for channel_id, channel_name in channels_to_clear:
+        if not channel_id:
+            continue
 
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            log.warning(f"{channel_name.title()} channel {channel_id} not found")
+            continue
 
-def _fmt_time_val(t) -> str:
-    try:
-        if isinstance(t, str) and ":" in t:
-            parts = t.split(":")
-            h = int(parts[0])
-            m = int(parts[1]) if len(parts) > 1 else 0
-            return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
-        h = int(float(t))
-        m = int((float(t) - h) * 60)
-        return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
-    except Exception:
-        return str(t)
+        try:
+            log.info(f"Clearing {channel_name} channel...")
+            deleted = await channel.purge(limit=100)
+            log.info(f"Cleared {len(deleted)} message(s) from {channel_name} channel")
+        except discord.Forbidden:
+            log.error(f"Bot lacks permissions to clear {channel_name} channel")
+        except discord.HTTPException as e:
+            log.error(f"Failed to clear {channel_name} channel: {e}")
 
-
-# ── Server connect embed ──────────────────────────────────────────────────────
-async def _post_server_connect_embed(server: dict, socket):
-    """Post a notification when successfully connected to a server"""
-    if not socket:
-        return
-
-    name = server.get("name", server["ip"])
-    ip = server["ip"]
-    port = server.get("port", "28017")
-
-    try:
-        info = await asyncio.wait_for(socket.get_info(), timeout=10.0)
-        time_obj = await asyncio.wait_for(socket.get_time(), timeout=10.0)
-
-        if isinstance(info, RustError) or isinstance(time_obj, RustError):
-            raise Exception("Failed to fetch server info")
-
-        wipe_ts = getattr(info, "wipe_time", 0) or 0
-        now_ts = int(time.time())
-        wipe_days = (now_ts - wipe_ts) / 86400 if wipe_ts else None
-        wipe_str = f"{wipe_days:.1f} days" if wipe_days is not None else "Unknown"
-
-        now_ig = _parse_time_to_float(time_obj.time)
-        sunset = _parse_time_to_float(time_obj.sunset)
-        sunrise = _parse_time_to_float(time_obj.sunrise)
-
-        is_day = sunrise <= now_ig < sunset
-        if is_day:
-            diff_h = (sunset - now_ig) % 24
-            till_night = f"~{int(diff_h * 2.5)}m"
-        else:
-            till_night = "Night"
-
-        players_str = f"{info.players}/{info.max_players}"
-        if info.queued_players:
-            players_str += f" ({info.queued_players} queued)"
-
-        embed = discord.Embed(
-            title=f"🟢 Connected — {name}",
-            color=0xCE422B,
-        )
-        embed.add_field(name="Players", value=players_str, inline=True)
-        embed.add_field(name="In-Game Time", value=_fmt_time_val(time_obj.time), inline=True)
-        embed.add_field(name="Till Night", value=till_night, inline=True)
-        embed.add_field(name="Since Wipe", value=wipe_str, inline=True)
-        embed.add_field(name="Map Size", value=str(info.size), inline=True)
-        embed.add_field(name="Seed", value=str(info.seed), inline=True)
-        embed.add_field(name="Map", value=info.map, inline=True)
-        embed.add_field(name="Connect", value=f"`connect {ip}:{port}`", inline=False)
-        embed.set_footer(text=f"{ip}:{port}")
-
-        await notify(embed)
-
-    except asyncio.TimeoutError:
-        log.warning("Server connect embed timed out")
-        await notify(discord.Embed(
-            title=f"🟢 Connected — {name}",
-            description=f"`{ip}:{port}` (details timed out)",
-            color=0xCE422B,
-        ))
-    except Exception as e:
-        log.warning(f"Could not build server connect embed: {e}")
-        await notify(discord.Embed(
-            title=f"🟢 Connected — {name}",
-            description=f"`{ip}:{port}`",
-            color=0xCE422B,
-        ))
-
-
-# ── Events ────────────────────────────────────────────────────────────────────
+# -- Events -------------------------------
 @bot.event
 async def on_ready():
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     _log_channel_config()
+
+    if NOTIFICATION_CHANNEL or COMMAND_CHANNEL or CHAT_RELAY_CHANNEL:
+        await _clear_bot_channels()
 
     # Register chat relay callback
     if CHAT_RELAY_CHANNEL:
@@ -348,44 +353,13 @@ async def on_ready():
     # Start FCM listeners for all registered users
     bot.loop.create_task(manager.start_all_fcm_listeners(on_new_server_paired))
 
-    # Start monitors for any already paired servers for registered users
-    async def _start_existing_monitors():
-        users = user_manager.list_users()
-        for u in users:
-            discord_id = u.get('discord_id')
-            if not discord_id:
-                continue
-            async def _connect_and_monitor(did):
-                try:
-                    # Ensure a socket exists for this user's active server
-                    try:
-                        await manager.ensure_connected_for_user(did)
-                    except Exception:
-                        # could not connect; skip
-                        return
-                    socket = manager.get_socket_for_user(did)
-                    active = manager.get_active_server_for_user(did)
-                    if socket and active and voice_alert_manager:
-                        server_key = f"{active.get('ip')}:{active.get('port', '28017')}"
-                        existing = _voice_monitor_tasks.get(server_key)
-                        if existing is None or existing.done():
-                            task = bot.loop.create_task(voice_alert_manager.start_monitoring(socket, bot, monitored_server=server_key))
-                            _voice_monitor_tasks[server_key] = task
-                            log.info(f"Started existing voice alarm monitor for {server_key}")
-                except Exception as e:
-                    log.warning(f"Could not start existing monitor for {did}: {e}")
-
-            bot.loop.create_task(_connect_and_monitor(discord_id))
-
-    bot.loop.create_task(_start_existing_monitors())
-
     # Show registration status
     user_count = len(user_manager.list_users())
 
     if user_count == 0:
-        log.info("⚠️  No users registered yet")
+        log.info("No users registered yet")
         await notify(discord.Embed(
-            title="🤖 Bot Online - Multi-User Mode",
+            title="Bot Online",
             description=(
                 "No users registered yet.\n\n"
                 "**To register:**\n"
@@ -396,7 +370,7 @@ async def on_ready():
             color=0xCE422B,
         ))
     else:
-        log.info(f"✅ {user_count} user(s) registered")
+        log.info(f" {user_count} user(s) registered")
 
         # Auto-connect to servers
         await asyncio.sleep(2)  # Brief delay for stability
@@ -404,21 +378,22 @@ async def on_ready():
 
         if reconnected:
             await notify(discord.Embed(
-                title="🤖 Bot Online - Multi-User Mode",
-                description=f"**{user_count}** user(s) registered\n✅ Auto-connected to servers",
+                title="Bot Online",
+                description=f"**{user_count}** user(s) registered\n Auto-connected to servers",
                 color=0x00FF00,
             ))
+            bot.loop.create_task(server_status_loop())
         else:
             await notify(discord.Embed(
-                title="🤖 Bot Online - Multi-User Mode",
+                title="Bot Online",
                 description=(
                     f"**{user_count}** user(s) registered\n"
-                    f"⚠️ No active servers - pair one in-game"
+                    f"No active servers - pair one in-game"
                 ),
                 color=0xFFA500,
             ))
 
-    log.info("Bot ready! 🚀")
+    log.info("Bot ready!")
 
 
 def _log_channel_config():
@@ -426,7 +401,7 @@ def _log_channel_config():
         if not cid:
             return "❌ not set"
         ch = bot.get_channel(cid)
-        return f"✅ #{ch.name}" if ch else f"⚠️  ID {cid} not found"
+        return f" #{ch.name}" if ch else f" ID {cid} not found"
 
     log.info("Channel configuration:")
     log.info(f"  Commands      → {_ch(COMMAND_CHANNEL)}")
@@ -441,25 +416,9 @@ async def on_new_server_paired(discord_id: str, server: dict):
         return
 
     name = server.get("name", server["ip"])
-    log.info(f"📲 New server paired by {user['discord_name']}: {name}")
+    log.info(f"New server paired by {user['discord_name']}: {name}")
 
-    # Get the socket for this user
-    socket = manager.get_socket_for_user(discord_id)
-    if socket:
-        await _post_server_connect_embed(server, socket)
-        # Start voice/DM monitoring for this server if a VoiceAlertManager is configured
-        try:
-            if voice_alert_manager:
-                server_key = f"{server.get('ip')}:{server.get('port', '28017')}"
-                # Avoid creating duplicate tasks
-                existing = _voice_monitor_tasks.get(server_key)
-                if existing is None or existing.done():
-                    task = bot.loop.create_task(voice_alert_manager.start_monitoring(socket, bot, monitored_server=server_key))
-                    _voice_monitor_tasks[server_key] = task
-                    log.info(f"Started voice alarm monitor for {server_key}")
-        except Exception as e:
-            log.warning(f"Could not start voice alarm monitor: {e}")
-
+    await update_status_message(discord_id)
 
 async def _on_timer_expired(label: str, text: str):
     """Called by TimerManager when a timer fires"""
@@ -538,7 +497,7 @@ async def _handle_ingame_command(query: str, player_name: str):
         log.error(f"In-game command error: {e}")
 
 
-# ── Message Handler ───────────────────────────────────────────────────────────
+# -- Message Handler -------------------------------
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
@@ -550,7 +509,7 @@ async def on_message(message: discord.Message):
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
         if not content_lower.startswith(COMMAND_PREFIX):
             await _relay_discord_to_rust(message)
-        return
+            return
 
     if not content_lower.startswith(COMMAND_PREFIX):
         await bot.process_commands(message)
@@ -558,8 +517,9 @@ async def on_message(message: discord.Message):
 
     # Ignore commands outside command channel (except DMs)
     if COMMAND_CHANNEL and message.channel.id != COMMAND_CHANNEL:
-        if not isinstance(message.channel, discord.DMChannel):
-            return
+        if not (CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL):
+            if not isinstance(message.channel, discord.DMChannel):
+                return
 
     query = message.content[len(COMMAND_PREFIX):].strip()
     log.info(f"[{message.author}] ! {query or '(empty)'}")
@@ -607,8 +567,9 @@ async def on_message(message: discord.Message):
             log.error(f"Command error: {e}", exc_info=True)
             response = f"⚠️ Error: `{e}`"
 
-    # Handle text or (text, image) response
+    # Handle different response types
     if isinstance(response, tuple):
+        # Map command - (text, image)
         text, img_bytes = response
         try:
             file = discord.File(io.BytesIO(img_bytes), filename="map.jpg")
@@ -616,12 +577,16 @@ async def on_message(message: discord.Message):
         except Exception as e:
             log.error(f"Could not send map image: {e}")
             await message.reply(text)
+    elif isinstance(response, discord.Embed):
+        # Status command - embed
+        await message.reply(embed=response)
     else:
+        # Regular text response
         for chunk in _split(response):
             await message.reply(chunk)
 
 
-# ── Discord → In-game ─────────────────────────────────────────────────────────
+# -- Discord → In-game -------------------------------
 async def _relay_discord_to_rust(message: discord.Message):
     """Forward Discord message to in-game team chat"""
     # Try to find an active socket
@@ -638,7 +603,7 @@ async def _relay_discord_to_rust(message: discord.Message):
     log.warning("Discord->Rust relay skipped: no active sockets")
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# -- Helpers -------------------------------
 def _split(text: str, limit: int = 1990) -> list[str]:
     """Split long messages into Discord-friendly chunks"""
     if len(text) <= limit:
@@ -654,7 +619,7 @@ def _split(text: str, limit: int = 1990) -> list[str]:
     return chunks
 
 
-# ── Run ───────────────────────────────────────────────────────────────────────
+# -- Run -------------------------------
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_TOKEN not set in .env — see README")

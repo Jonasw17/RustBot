@@ -1,8 +1,4 @@
 """
-server_manager.py
-────────────────────────────────────────────────────────────────────────────
-The heart of the multi-server companion system.
-
 Responsibilities:
   - Persist all paired servers to servers.json
   - Hold the active RustSocket connection

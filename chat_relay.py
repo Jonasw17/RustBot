@@ -1,6 +1,4 @@
 """
-chat_relay.py  [REWRITTEN for multi-server support]
-────────────────────────────────────────────────────────────────────────────
 Polls in-game team chat and forwards messages to a Discord channel.
 Also handles the Discord → Rust direction (see bot.py).
 
@@ -21,8 +19,8 @@ class ChatRelay:
     """
     Bi-directional chat bridge between Discord and Rust in-game team chat.
 
-    In-game  ──▶  Discord relay channel
-    Discord  ──▶  In-game team chat  (messages from non-bot users in the relay channel)
+    In-game  ->  Discord relay channel
+    Discord  ->  In-game team chat  (messages from non-bot users in the relay channel)
     """
 
     def __init__(self, rust: RustClient, channel: discord.TextChannel):

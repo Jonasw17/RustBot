@@ -1,6 +1,4 @@
 """
-multi_user_auth.py - FIXED VERSION
-────────────────────────────────────────────────────────────────────────────
 Allows multiple Discord users to pair their own Rust+ accounts with the bot.
 
 FIXES:
