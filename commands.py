@@ -712,7 +712,6 @@ async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tup
     return "Unknown command."
 
 
-#  Server Info Commands
 async def _cmd_status(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):

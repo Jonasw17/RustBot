@@ -59,13 +59,177 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 user_manager = UserManager()
 manager = MultiUserServerManager(user_manager)
 
-# ── Connection Health Tracking ────────────────────────────────────────────────
+# -- Connection Health Tracking -------------------------------
+# -- Connection Health Tracking -------------------------------
 _connection_health = {
     "last_successful_command": {},  # discord_id -> timestamp
     "reconnect_attempts": {},        # discord_id -> count
     "max_reconnect_attempts": 3
 }
 
+# ── Server Status Message Tracking -------------------------------
+_status_messages = {}  # discord_id -> {"message_id": int, "server": dict, "last_update": float}
+
+# -- Server Status Embeds -------------------------------
+
+def _build_minimal_embed(server: dict, status: str) -> discord.Embed:
+    """Build a minimal embed when full info is unavailable"""
+    embed = discord.Embed(
+        title=f"🟡 {server.get('name', server['ip'])}",
+        description=status,
+        color=0xFFA500,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(
+        name="Connect",
+        value=f"`connect {server['ip']}:{server.get('port', '28017')}`"
+    )
+    return embed
+
+async def build_server_status_embed(server: dict, socket, user_info: dict = None) -> discord.Embed:
+    """Build a rich server status embed with live data"""
+    try:
+        info = await asyncio.wait_for(socket.get_info(), timeout=10.0)
+        time_obj = await asyncio.wait_for(socket.get_time(), timeout=10.0)
+
+        if isinstance(info, RustError) or isinstance(time_obj, RustError):
+            raise Exception("Failed to fetch server info")
+
+        # Calculate wipe age
+        wipe_ts = getattr(info, "wipe_time", 0) or 0
+        now_ts = int(time.time())
+        wipe_days = (now_ts - wipe_ts) / 86400 if wipe_ts else 0
+
+        # Format player count
+        players = f"{info.players}/{info.max_players}"
+        if info.queued_players:
+            players += f" ({info.queued_players} queued)"
+
+        # Calculate day/night timing
+        now_ig = _parse_time_to_float(time_obj.time)
+        sunset = _parse_time_to_float(time_obj.sunset)
+        sunrise = _parse_time_to_float(time_obj.sunrise)
+
+        is_day = sunrise <= now_ig < sunset
+        if is_day:
+            diff_h = (sunset - now_ig) % 24
+            next_change = f"Night in ~{int(diff_h * 2.5)}m"
+            phase_emoji = "☀️"
+        else:
+            diff_h = (sunrise - now_ig) % 24
+            next_change = f"Day in ~{int(diff_h * 2.5)}m"
+            phase_emoji = "🌙"
+
+        # Build embed
+        embed = discord.Embed(
+            title=f"🟢 {server.get('name', server['ip'])}",
+            color=0xCE422B,
+            timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(name="Players", value=players, inline=True)
+        embed.add_field(name="Time", value=f"{phase_emoji} {_fmt_time_val(time_obj.time)}", inline=True)
+        embed.add_field(name="Next Phase", value=next_change, inline=True)
+
+        embed.add_field(name="Since Wipe", value=f"{wipe_days:.1f} days", inline=True)
+        embed.add_field(name="Map", value=f"{info.map} ({info.size})", inline=True)
+        embed.add_field(name="Seed", value=f"`{info.seed}`", inline=True)
+
+        embed.add_field(
+            name="Connect",
+            value=f"`connect {server['ip']}:{server.get('port', '28017')}`",
+            inline=False
+        )
+
+        # Add user info if provided
+        if user_info:
+            embed.set_footer(text=f"Connected by {user_info.get('discord_name', 'User')} • Updates every 45s")
+        else:
+            embed.set_footer(text="Updates every 45s")
+
+        return embed
+
+    except asyncio.TimeoutError:
+        log.warning(f"Server status timeout for {server.get('name', server['ip'])}")
+        return _build_minimal_embed(server, "⚠️ Connection timeout")
+    except Exception as e:
+        log.error(f"Error building status embed: {e}")
+        return _build_minimal_embed(server, f"⚠️ Error: {str(e)[:50]}")
+
+async def update_status_message(discord_id: str):
+    """Update or create status message for a user's active server"""
+    if not NOTIFICATION_CHANNEL:
+        return
+
+    # Get user's active connection
+    socket = manager.get_socket_for_user(discord_id)
+    server = manager.get_active_server_for_user(discord_id)
+
+    if not socket or not server:
+        # Clean up status message if no longer connected
+        if discord_id in _status_messages:
+            del _status_messages[discord_id]
+        return
+
+    user_info = user_manager.get_user(discord_id)
+    channel = bot.get_channel(NOTIFICATION_CHANNEL)
+
+    if not channel:
+        return
+
+    # Build the embed
+    embed = await build_server_status_embed(server, socket, user_info)
+
+    # Check if we have an existing message
+    status_data = _status_messages.get(discord_id)
+
+    if status_data and status_data.get("message_id"):
+        # Try to update existing message
+        try:
+            message = await channel.fetch_message(status_data["message_id"])
+            await message.edit(embed=embed)
+            status_data["last_update"] = time.time()
+            log.debug(f"Updated status message for {user_info.get('discord_name', discord_id)}")
+            return
+        except discord.NotFound:
+            log.info(f"Status message deleted, creating new one for {user_info.get('discord_name', discord_id)}")
+        except discord.HTTPException as e:
+            log.warning(f"Failed to update status message: {e}")
+
+    # Create new message
+    try:
+        message = await channel.send(embed=embed)
+        _status_messages[discord_id] = {
+            "message_id": message.id,
+            "server": server,
+            "last_update": time.time()
+        }
+        log.info(f"Created status message for {user_info.get('discord_name', discord_id)}")
+    except discord.HTTPException as e:
+        log.error(f"Failed to create status message: {e}")
+
+async def server_status_loop():
+    """Background task that updates all status messages every 45 seconds"""
+    await bot.wait_until_ready()
+    log.info("Server status loop started")
+
+    while not bot.is_closed():
+        try:
+            # Update status for all users with active connections
+            for discord_id in list(_status_messages.keys()):
+                socket = manager.get_socket_for_user(discord_id)
+                if socket:
+                    await update_status_message(discord_id)
+                else:
+                    # Clean up if no longer connected
+                    del _status_messages[discord_id]
+
+        except Exception as e:
+            log.error(f"Status update loop error: {e}")
+
+        await asyncio.sleep(45)
+
+#  ----- Connection Health Check and Auto-Reconnect ---------------------
 
 async def check_connection_health(discord_id: str) -> bool:
     """Monitor connection health and reconnect if needed"""
@@ -123,6 +287,7 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Auto-connecting to {server['name']} (1 user, 1 server)")
                 await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                await update_status_message(discord_id)
                 return True
             except Exception as e:
                 log.error(f"Auto-connect failed: {e}")
@@ -137,6 +302,7 @@ async def auto_connect_single_user_server():
             try:
                 log.info(f"Reconnecting to last server for user {discord_id}: {active_server['name']}")
                 await manager.connect_for_user(discord_id, active_server['ip'], active_server['port'])
+                await update_status_message(discord_id)
                 reconnected = True
             except Exception as e:
                 log.warning(f"Failed to reconnect user {discord_id}: {e}")
@@ -148,6 +314,7 @@ async def auto_connect_single_user_server():
                 try:
                     log.info(f"Connecting to first available server for user {discord_id}: {server['name']}")
                     await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                    await update_status_message(discord_id)
                     reconnected = True
                 except Exception as e:
                     log.warning(f"Failed to connect user {discord_id}: {e}")
@@ -248,75 +415,6 @@ def _fmt_time_val(t) -> str:
         return str(t)
 
 
-# ── Server connect embed ──────────────────────────────────────────────────────
-async def _post_server_connect_embed(server: dict, socket):
-    """Post a notification when successfully connected to a server"""
-    if not socket:
-        return
-
-    name = server.get("name", server["ip"])
-    ip = server["ip"]
-    port = server.get("port", "28017")
-
-    try:
-        info = await asyncio.wait_for(socket.get_info(), timeout=10.0)
-        time_obj = await asyncio.wait_for(socket.get_time(), timeout=10.0)
-
-        if isinstance(info, RustError) or isinstance(time_obj, RustError):
-            raise Exception("Failed to fetch server info")
-
-        wipe_ts = getattr(info, "wipe_time", 0) or 0
-        now_ts = int(time.time())
-        wipe_days = (now_ts - wipe_ts) / 86400 if wipe_ts else None
-        wipe_str = f"{wipe_days:.1f} days" if wipe_days is not None else "Unknown"
-
-        now_ig = _parse_time_to_float(time_obj.time)
-        sunset = _parse_time_to_float(time_obj.sunset)
-        sunrise = _parse_time_to_float(time_obj.sunrise)
-
-        is_day = sunrise <= now_ig < sunset
-        if is_day:
-            diff_h = (sunset - now_ig) % 24
-            till_night = f"~{int(diff_h * 2.5)}m"
-        else:
-            till_night = "Night"
-
-        players_str = f"{info.players}/{info.max_players}"
-        if info.queued_players:
-            players_str += f" ({info.queued_players} queued)"
-
-        embed = discord.Embed(
-            title=f"🟢 Connected — {name}",
-            color=0xCE422B,
-        )
-        embed.add_field(name="Players", value=players_str, inline=True)
-        embed.add_field(name="In-Game Time", value=_fmt_time_val(time_obj.time), inline=True)
-        embed.add_field(name="Till Night", value=till_night, inline=True)
-        embed.add_field(name="Since Wipe", value=wipe_str, inline=True)
-        embed.add_field(name="Map Size", value=str(info.size), inline=True)
-        embed.add_field(name="Seed", value=str(info.seed), inline=True)
-        embed.add_field(name="Map", value=info.map, inline=True)
-        embed.add_field(name="Connect", value=f"`connect {ip}:{port}`", inline=False)
-        embed.set_footer(text=f"{ip}:{port}")
-
-        await notify(embed)
-
-    except asyncio.TimeoutError:
-        log.warning("Server connect embed timed out")
-        await notify(discord.Embed(
-            title=f"🟢 Connected — {name}",
-            description=f"`{ip}:{port}` (details timed out)",
-            color=0xCE422B,
-        ))
-    except Exception as e:
-        log.warning(f"Could not build server connect embed: {e}")
-        await notify(discord.Embed(
-            title=f"🟢 Connected — {name}",
-            description=f"`{ip}:{port}`",
-            color=0xCE422B,
-        ))
-
-
 # ── Events ────────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
@@ -340,9 +438,9 @@ async def on_ready():
     user_count = len(user_manager.list_users())
 
     if user_count == 0:
-        log.info("⚠️  No users registered yet")
+        log.info("No users registered yet")
         await notify(discord.Embed(
-            title="🤖 Bot Online - Multi-User Mode",
+            title="Bot Online - Multi-User Mode",
             description=(
                 "No users registered yet.\n\n"
                 "**To register:**\n"
@@ -361,21 +459,22 @@ async def on_ready():
 
         if reconnected:
             await notify(discord.Embed(
-                title="🤖 Bot Online - Multi-User Mode",
+                title="Bot Online - Multi-User Mode",
                 description=f"**{user_count}** user(s) registered\n✅ Auto-connected to servers",
                 color=0x00FF00,
             ))
+            bot.loop.create_task(server_status_loop())
         else:
             await notify(discord.Embed(
-                title="🤖 Bot Online - Multi-User Mode",
+                title="Bot Online - Multi-User Mode",
                 description=(
                     f"**{user_count}** user(s) registered\n"
-                    f"⚠️ No active servers - pair one in-game"
+                    f"No active servers - pair one in-game"
                 ),
                 color=0xFFA500,
             ))
 
-    log.info("Bot ready! 🚀")
+    log.info("Bot ready!")
 
 
 def _log_channel_config():
@@ -383,7 +482,7 @@ def _log_channel_config():
         if not cid:
             return "❌ not set"
         ch = bot.get_channel(cid)
-        return f"✅ #{ch.name}" if ch else f"⚠️  ID {cid} not found"
+        return f" #{ch.name}" if ch else f" ID {cid} not found"
 
     log.info("Channel configuration:")
     log.info(f"  Commands      → {_ch(COMMAND_CHANNEL)}")
@@ -398,13 +497,9 @@ async def on_new_server_paired(discord_id: str, server: dict):
         return
 
     name = server.get("name", server["ip"])
-    log.info(f"📲 New server paired by {user['discord_name']}: {name}")
+    log.info(f"New server paired by {user['discord_name']}: {name}")
 
-    # Get the socket for this user
-    socket = manager.get_socket_for_user(discord_id)
-    if socket:
-        await _post_server_connect_embed(server, socket)
-
+    await update_status_message(discord_id)
 
 async def _on_timer_expired(label: str, text: str):
     """Called by TimerManager when a timer fires"""
