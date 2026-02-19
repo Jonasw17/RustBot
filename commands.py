@@ -1,6 +1,6 @@
 """
 commands.py
-────────────────────────────────────────────────────────────────────────────
+
 All !command handlers - MULTI-USER ONLY architecture.
 
 All old single-user code removed.
@@ -20,12 +20,27 @@ from typing import Optional
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
 from timers import timer_manager
-
+from rust_info_db import (
+    get_all_vehicle_costs,
+    get_all_car_module_costs,
+    get_vehicle_cost,
+    get_car_module_cost,
+    get_blueprint_fragment_info,
+    search_info,
+    DEVICE_CATEGORIES,
+    CRAFT_DATA,
+    RESEARCH_DATA,
+    RECYCLE_DATA,
+    DECAY_DATA,
+    UPKEEP_DATA,
+    CCTV_DATA,
+    BLUEPRINT_FRAGMENT_DATA
+)
 log = logging.getLogger("Commands")
 
 _BOT_START_TIME = _time_module.time()
 
-# ── Clear Chat cmd ────────────────────────────────────────────────────────────
+#  Clear Chat cmd
 async def cmd_clear(args: str, ctx) -> str | None:
     """
     !clear [amount]  - Delete last N messages (default 10, max 1000)
@@ -64,7 +79,7 @@ async def cmd_clear(args: str, ctx) -> str | None:
         return f"Failed to clear messages: `{e}`"
 
 
-# ── Event timestamp cache ─────────────────────────────────────────────────────
+#  Event timestamp cache
 _EVENT_CACHE_FILE = _Path("event_timestamps.json")
 
 def _load_event_cache() -> dict:
@@ -85,7 +100,7 @@ def _save_event_cache(cache: dict):
 
 _event_first_seen: dict = _load_event_cache()
 
-# ── Smart Switch registry ─────────────────────────────────────────────────────
+#  Smart Switch registry
 _SWITCHES_FILE = _Path("switches.json")
 
 def _load_switches() -> dict:
@@ -104,8 +119,138 @@ def _save_switches(switches: dict):
 
 _switches: dict = _load_switches()
 
+async def cmd_timer(args: str) -> str:
+    """
+    Timer commands:
+    !timer add <duration> [text] - Add a new timer
+    !timer remove <id> - Remove a timer
+    !timer list - List all active timers
 
-# ── Main Router ───────────────────────────────────────────────────────────────
+    Duration format: 15m, 2h30m, 1h15m30s
+    """
+    if not args:
+        return timer_manager.list_timers()
+
+    parts = args.split(None, 1)
+    subcommand = parts[0].lower()
+
+    if subcommand in ("list", "ls"):
+        return timer_manager.list_timers()
+
+    elif subcommand in ("add", "set", "create"):
+        if len(parts) < 2:
+            return (
+                "Usage: `!timer add <duration> [text]`\n"
+                "Examples:\n"
+                "• `!timer add 15m Furnace check`\n"
+                "• `!timer add 2h30m Raid defense`\n"
+                "• `!timer add 1h Base upkeep`"
+            )
+
+        rest = parts[1].split(None, 1)
+        duration = rest[0]
+        text = rest[1] if len(rest) > 1 else None
+
+        success, message = timer_manager.add(duration, text)
+        return message
+
+    elif subcommand in ("remove", "rm", "delete", "del"):
+        if len(parts) < 2:
+            return "Usage: `!timer remove <id>`"
+
+        timer_id = parts[1]
+        success, message = timer_manager.remove(timer_id)
+        return message
+
+    else:
+        return (
+            "**Timer Commands:**\n"
+            "`!timer` or `!timer list` - Show active timers\n"
+            "`!timer add <duration> [text]` - Create timer\n"
+            "`!timer remove <id>` - Delete timer\n\n"
+            "**Duration Examples:**\n"
+            "`15m` = 15 minutes\n"
+            "`2h30m` = 2 hours 30 minutes\n"
+            "`1h15m30s` = 1 hour 15 min 30 sec"
+        )
+
+
+async def cmd_smart_switch(
+        cmd: str,
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    Smart switch control commands:
+    !sson <name> - Turn on a smart switch
+    !ssoff <name> - Turn off a smart switch
+    """
+    if not args:
+        return f"Usage: `!{cmd} <switch_name>`\nExample: `!{cmd} maingate`"
+
+    switch_name = args.strip()
+
+    # Check user registration
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    # Get active server
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected. Use `!switch <server>` to connect first."
+
+    # Get socket
+    socket = manager.get_socket_for_user(discord_id)
+    if not socket:
+        return "Not connected to server."
+
+    # Find the switch
+    server_key = f"{active['ip']}:{active['port']}"
+    full_key = f"{discord_id}_{server_key}_{switch_name}"
+
+    if full_key not in _switches:
+        return (
+            f"Switch `{switch_name}` not found on **{active.get('name', active['ip'])}**.\n"
+            f"Use `!switches` to see registered switches."
+        )
+
+    entity_id = _switches[full_key]
+
+    # Determine action
+    turn_on = (cmd == "sson")
+    action_text = "ON" if turn_on else "OFF"
+
+    try:
+        # Send the command to toggle the smart switch
+        result = await socket.turn_on_smart_switch(entity_id) if turn_on else await socket.turn_off_smart_switch(entity_id)
+
+        if isinstance(result, RustError):
+            return f"Error toggling switch: {result.reason}"
+
+        return f"Smart switch **{switch_name}** turned **{action_text}** ✓"
+
+    except Exception as e:
+        log.error(f"Error toggling smart switch: {e}")
+        return f"Failed to toggle switch: {str(e)}"
+
+
+def cmd_fragments(args: str) -> str:
+    """
+    !fragments [basic|advanced] - Show blueprint fragment information
+    """
+    if not args:
+        return get_blueprint_fragment_info()
+
+    fragment_type = args.strip().lower()
+    if fragment_type in ("basic", "advanced"):
+        return get_blueprint_fragment_info(fragment_type)
+
+    return "Usage: `!fragments` or `!fragments basic` or `!fragments advanced`"
+
+
+#  Main Router
 async def handle_query(
         query: str,
         manager: MultiUserServerManager,
@@ -145,6 +290,27 @@ async def handle_query(
     if cmd in ("sson", "ssoff"):
         return await cmd_smart_switch(cmd, args, manager, user_manager, discord_id)
 
+    if cmd in ("fragments", "fragment", "bp"):
+        return cmd_fragments(args)
+
+    # Smart item commands (separate from server pairing)
+    if cmd == "smartitems":
+        return await cmd_smart_items(manager, user_manager, discord_id)
+    if cmd == "addswitch":
+        return await cmd_add_switch(args, manager, user_manager, discord_id)
+    if cmd == "removeswitch":
+        return await cmd_remove_switch(args, manager, user_manager, discord_id)
+    if cmd == "switches":
+        return cmd_list_switches(manager, user_manager, discord_id)
+
+    # Info commands (vehicles, costs, etc.)
+    if cmd in ("vehicles", "vehiclecosts"):
+        return cmd_vehicle_costs()
+    if cmd in ("carmodules", "modules"):
+        return cmd_car_module_costs()
+    if cmd == "price":
+        return cmd_price(args)
+
     # Commands needing a live socket
     live_cmds = {
         "status", "info",
@@ -168,7 +334,7 @@ async def handle_query(
         if not active:
             return (
                 "No server connected.\n"
-                "Join a Rust server and press **ESC → Rust+ → Pair Server**."
+                "Join a Rust server and press **ESC â†’ Rust+ â†’ Pair Server**."
             )
 
         try:
@@ -185,7 +351,7 @@ async def handle_query(
     return cmd_game_question(query)
 
 
-# ── Meta Commands ─────────────────────────────────────────────────────────────
+#  Meta Commands
 def cmd_servers(
         manager: MultiUserServerManager,
         user_manager: UserManager,
@@ -204,14 +370,14 @@ def cmd_servers(
     if not servers:
         return (
             "**No servers paired yet.**\n"
-            "Join any Rust server and press **ESC → Rust+ → Pair Server**."
+            "Join any Rust server and press **ESC â†’ Rust+ â†’ Pair Server**."
         )
 
     lines = []
     for i, s in enumerate(servers, 1):
         is_active = active and s["ip"] == active["ip"] and s["port"] == active["port"]
         tag = "`active`" if is_active else f"`{i}.`"
-        lines.append(f"{tag} **{s.get('name', s['ip'])}** — `{s['ip']}:{s['port']}`")
+        lines.append(f"{tag} **{s.get('name', s['ip'])}** â€” `{s['ip']}:{s['port']}`")
 
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
         "\n\nUse `!switch <name or number>` to switch."
@@ -243,114 +409,28 @@ async def cmd_switch(
 
 def cmd_help() -> str:
     return (
-        "**Rust+ Companion Bot** — prefix: `!`\n\n"
+        "**Rust+ Companion Bot** - prefix: `!`\n\n"
+        "**Server Management:**\n"
+        "`servers` - `switch <n or #>` - `register` - `whoami`\n\n"
         "**Server Info:**\n"
         "`status` - `players` - `pop` - `time` - `map` - `wipe` - `uptime`\n\n"
         "**Team:**\n"
         "`team` - `online` - `offline` - `afk` - `alive [name]` - `leader [name]`\n\n"
         "**Events:**\n"
         "`events` - `heli` - `cargo` - `chinook` - `large` - `small`\n\n"
+        "**Smart Items:** (separate from server pairing)\n"
+        "`smartitems` - `addswitch <n> <id>` - `removeswitch <n>`\n"
+        "`sson <n>` - `ssoff <n>` - `switches`\n\n"
+        "**Costs & Info:**\n"
+        "`vehicles` - `carmodules` - `price <item>`\n\n"
         "**Utilities:**\n"
         "`timer add <time> <label>` - `timer remove <id>` - `timers`\n"
-        "`sson <name or id>` - `ssoff <name or id>`\n"
         "`clear [amount]` - `clear all`\n\n"
         "**Game Info:**\n"
         "`craft <item>` - `recycle <item>` - `research <item>`\n"
         "`decay <item>` - `upkeep <item>` - `item <n>` - `cctv <monument>`\n\n"
-        "**Multi-User:**\n"
-        "`register` - `whoami` - `servers` - `switch <name or #>`\n\n"
-        "**Q&A:** `!<question>`"
+        "**Q&A:** Ask any Rust question!"
     )
-
-
-# ── Timer Command ─────────────────────────────────────────────────────────────
-async def cmd_timer(args: str) -> str:
-    if not args or args == "list":
-        return timer_manager.list_timers()
-
-    parts = args.split(None, 1)
-    sub = parts[0].lower()
-    rest = parts[1].strip() if len(parts) > 1 else ""
-
-    if sub == "add":
-        sub_parts = rest.split(None, 1)
-        if not sub_parts:
-            return "Usage: `!timer add <time> <label>`\nExample: `!timer add 15m TC is low`"
-        duration = sub_parts[0]
-        label = sub_parts[1] if len(sub_parts) > 1 else ""
-        ok, msg = timer_manager.add(duration, label)
-        return msg
-
-    if sub == "remove":
-        if not rest:
-            return "Usage: `!timer remove <id>`"
-        ok, msg = timer_manager.remove(rest.split()[0])
-        return msg
-
-    return timer_manager.list_timers()
-
-
-# ── Smart Switch Commands ─────────────────────────────────────────────────────
-async def cmd_smart_switch(
-        cmd: str,
-        args: str,
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str:
-    """
-    !sson <name or entity_id>
-    !ssoff <name or entity_id>
-    """
-    if not args:
-        registered = ", ".join(f"`{k}` ({v})" for k, v in _switches.items())
-        hint = f"\nRegistered switches: {registered}" if registered else \
-            "\nNo switches registered yet. Add them to `switches.json` as `{\"name\": entity_id}`."
-        return f"Usage: `!sson <name or id>` / `!ssoff <name or id>`{hint}"
-
-    # Check user registration
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-
-    # Resolve switch name/ID
-    entity_id = _resolve_switch(args)
-    if entity_id is None:
-        return (
-            f"Switch `{args}` not found.\n"
-            f"Add it to `switches.json` as `{{\"name\": entity_id}}`, "
-            f"or use the entity ID directly."
-        )
-
-    # Get active connection
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected."
-
-    try:
-        await manager.ensure_connected_for_user(discord_id)
-        socket = manager.get_socket_for_user(discord_id)
-
-        if cmd == "sson":
-            result = await socket.set_entity_value(entity_id, True)
-        else:
-            result = await socket.set_entity_value(entity_id, False)
-
-        # Check for errors
-        if hasattr(result, 'error') and result.error:
-            return f"Error: {result.error}"
-
-        state = "ON" if cmd == "sson" else "OFF"
-        label = args if args.isdigit() else f"{args} ({entity_id})"
-        return f"Smart Switch **{label}** turned **{state}**."
-
-    except AttributeError as e:
-        return (
-            f"Smart switch control failed: {e}\n"
-            "Your rustplus library version may not support smart switches.\n"
-            "Try: `pip install --upgrade rustplus`"
-        )
-    except Exception as e:
-        return f"Could not toggle switch: `{e}`"
 
 
 def _resolve_switch(identifier: str) -> int | None:
@@ -364,7 +444,243 @@ def _resolve_switch(identifier: str) -> int | None:
     return None
 
 
-# ── Live Command Dispatcher ───────────────────────────────────────────────────
+# New Smart Item Management Commands
+async def cmd_smart_items(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    Show all smart items (switches, alarms, etc.) paired to the current server.
+    Separate from server pairing - this is for in-game controllable devices.
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected. Use `!switch <server>` to connect to a server first."
+
+    server_key = f"{active['ip']}:{active['port']}"
+    user_switches = {k: v for k, v in _switches.items() if k.startswith(f"{discord_id}_{server_key}_")}
+
+    if not user_switches:
+        return (
+            f"**Smart Items on {active.get('name', active['ip'])}**\n"
+            "No smart items paired yet.\n\n"
+            "Use `!addswitch <name> <entity_id>` to add a smart switch.\n"
+            "Get entity IDs from the Rust+ app when pairing devices."
+        )
+
+    lines = []
+    for full_key, entity_id in user_switches.items():
+        # Extract just the name part (after discord_id_server_key_)
+        name = full_key.split('_', 3)[-1] if '_' in full_key else full_key
+        lines.append(f"`{name}` - Entity ID: `{entity_id}`")
+
+    return (
+            f"**Smart Items on {active.get('name', active['ip'])}**\n" +
+            "\n".join(lines) +
+            "\n\nControl with: `!sson <name>` / `!ssoff <name>`"
+    )
+
+
+async def cmd_add_switch(
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !addswitch <name> <entity_id>
+    Add a smart switch to the current server.
+    """
+    if not args:
+        return (
+            "Usage: `!addswitch <name> <entity_id>`\n"
+            "Example: `!addswitch maingate 12345678`\n\n"
+            "Get entity IDs from Rust+ app when pairing devices."
+        )
+
+    parts = args.split(None, 1)
+    if len(parts) != 2:
+        return "Usage: `!addswitch <name> <entity_id>`"
+
+    name, entity_id_str = parts
+
+    # Validate entity ID
+    try:
+        entity_id = int(entity_id_str)
+    except ValueError:
+        return f"Invalid entity ID: `{entity_id_str}`. Must be a number."
+
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected. Use `!switch <server>` to connect first."
+
+    # Store with user and server prefix to keep switches separate
+    server_key = f"{active['ip']}:{active['port']}"
+    full_key = f"{discord_id}_{server_key}_{name}"
+
+    _switches[full_key] = entity_id
+    _save_switches(_switches)
+
+    return (
+        f"Smart switch **{name}** added to **{active.get('name', active['ip'])}**.\n"
+        f"Entity ID: `{entity_id}`\n\n"
+        f"Control it with: `!sson {name}` / `!ssoff {name}`"
+    )
+
+
+async def cmd_remove_switch(
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !removeswitch <name>
+    Remove a smart switch from the current server.
+    """
+    if not args:
+        return "Usage: `!removeswitch <name>`"
+
+    name = args.strip()
+
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected."
+
+    server_key = f"{active['ip']}:{active['port']}"
+    full_key = f"{discord_id}_{server_key}_{name}"
+
+    if full_key not in _switches:
+        return f"Switch `{name}` not found on this server."
+
+    del _switches[full_key]
+    _save_switches(_switches)
+
+    return f"Smart switch **{name}** removed from **{active.get('name', active['ip'])}**."
+
+
+def cmd_list_switches(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !switches
+    List all switches across all servers for this user.
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    user_switches = {k: v for k, v in _switches.items() if k.startswith(f"{discord_id}_")}
+
+    if not user_switches:
+        return (
+            "No smart switches registered yet.\n"
+            "Use `!addswitch <name> <entity_id>` to add one."
+        )
+
+    # Group by server
+    by_server = {}
+    for full_key, entity_id in user_switches.items():
+        parts = full_key.split('_', 3)
+        if len(parts) >= 3:
+            server_key = parts[1]  # IP:Port
+            name = parts[3] if len(parts) > 3 else full_key
+            if server_key not in by_server:
+                by_server[server_key] = []
+            by_server[server_key].append((name, entity_id))
+
+    lines = []
+    for server_key, switches in by_server.items():
+        lines.append(f"\n**{server_key}:**")
+        for name, entity_id in switches:
+            lines.append(f"  `{name}` - Entity ID: `{entity_id}`")
+
+    return "**Your Smart Switches:**" + "\n".join(lines)
+
+
+# Info Commands (Vehicle/Module Costs)
+def cmd_vehicle_costs() -> str:
+    """Show all vehicle costs (boats and helicopters)"""
+    return (
+            "**Vehicle Costs**\n\n" +
+            get_all_vehicle_costs() +
+            "\n\nUse `!price <vehicle>` for specific details."
+    )
+
+
+def cmd_car_module_costs() -> str:
+    """Show car module costs from electrical branch down"""
+    return (
+            "**Modular Car Components (Electrical Branch Down)**\n\n" +
+            get_all_car_module_costs() +
+            "\n\nAll modules cost to branch down at Level 2 Workbench."
+    )
+
+
+def cmd_price(args: str) -> str:
+    """
+    !price <item>
+    Get specific price/cost information for vehicles or car modules.
+    """
+    if not args:
+        return (
+            "Usage: `!price <item>`\n"
+            "Examples: `!price minicopter`, `!price camper module`, `!price rhib`"
+        )
+
+    # Try vehicle first
+    vehicle = get_vehicle_cost(args)
+    if vehicle:
+        msg = f"**{vehicle['name']}**\n"
+        msg += f"> Cost: **{vehicle['scrap']} scrap**\n"
+        msg += f"> Location: {vehicle['location']}"
+        if 'note' in vehicle:
+            msg += f"\n> Note: {vehicle['note']}"
+        return msg
+
+    # Try car module
+    module = get_car_module_cost(args)
+    if module:
+        msg = f"**{module['name']}**\n"
+        msg += f"> Branch Down Cost: **{module['scrap']} scrap**\n"
+        msg += f"> Workbench: {module['workbench']}"
+        if 'storage' in module:
+            msg += f"\n> Storage: {module['storage']}"
+        if 'features' in module:
+            msg += f"\n> Features: {', '.join(module['features'])}"
+        return msg
+
+    # Try searching in info database
+    results = search_info(args)
+    if results:
+        msg_parts = []
+        for result in results[:3]:  # Limit to 3 results
+            if result['type'] == 'vehicle':
+                v = result['data']
+                msg_parts.append(f"**{v['name']}**: {v['scrap']} scrap at {v['location']}")
+            elif result['type'] == 'car_module':
+                m = result['data']
+                msg_parts.append(f"**{m['name']}**: {m['scrap']} scrap (Branch down)")
+            elif result['type'] == 'qa':
+                qa = result['data']
+                msg_parts.append(f"**{qa['question']}**\n> {qa['answer']}")
+        return "\n\n".join(msg_parts)
+
+    return f"No price information found for `{args}`.\nTry: `!vehicles` or `!carmodules`"
+
+
+#  Live Command Dispatcher
 async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tuple:
     name = active.get("name", active["ip"])
 
@@ -396,7 +712,7 @@ async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tup
     return "Unknown command."
 
 
-# ── Server Info Commands ──────────────────────────────────────────────────────
+#  Server Info Commands
 async def _cmd_status(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
@@ -423,7 +739,7 @@ async def _cmd_wipe(socket, name: str) -> str:
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
     elapsed = _fmt_elapsed(int(_time_module.time()) - info.wipe_time) if info.wipe_time else "Unknown"
-    return f"**{name}** — Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
+    return f"**{name}** â€” Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
 
 
 def _cmd_uptime(name: str) -> str:
@@ -442,7 +758,7 @@ async def _cmd_time(socket, name: str) -> str:
     till_change = _time_till(now_f, sunset if is_day else sunrise)
     phase = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
     return (
-        f"**{name} — In-Game Time**\n"
+        f"**{name} â€” In-Game Time**\n"
         f"> **Now:** {_fmt_time(t.time)}\n"
         f"> **Sunrise:** {_fmt_time(t.sunrise)}  |  **Sunset:** {_fmt_time(t.sunset)}\n"
         f"> {phase}"
@@ -475,7 +791,7 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         )
         return (caption, img_bytes)
     except Exception as e:
-        log.warning(f"Map image fetch failed: {e} — falling back to text")
+        log.warning(f"Map image fetch failed: {e} â€” falling back to text")
         return (
             f"**{name}**\n"
             f"> **Map:** {info.map}  |  **Seed:** `{info.seed}`  |  **Size:** {info.size}\n"
@@ -483,7 +799,7 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         )
 
 
-# ── Team Commands ─────────────────────────────────────────────────────────────
+#  Team Commands
 async def _cmd_team(socket) -> str:
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -493,8 +809,8 @@ async def _cmd_team(socket) -> str:
     lines = []
     for m in team.members:
         status = "Online" if m.is_online else "Offline"
-        alive = "" if m.is_alive else " — Dead"
-        lines.append(f"> **{m.name}** — {status}{alive}")
+        alive = "" if m.is_alive else " â€” Dead"
+        lines.append(f"> **{m.name}** â€” {status}{alive}")
     return f"**Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
 
@@ -528,7 +844,7 @@ async def _cmd_afk(socket) -> str:
     return (
             "**Online Team Members**\n"
             + "\n".join(f"> **{m.name}**" for m in online)
-            + "\n_AFK detection requires position history — not available via Rust+ API._"
+            + "\n_AFK detection requires position history â€” not available via Rust+ API._"
     )
 
 
@@ -540,18 +856,18 @@ async def _cmd_alive(socket, args: str) -> str:
         match = next((m for m in team.members if args.lower() in m.name.lower()), None)
         if not match:
             return f"No team member found matching `{args}`."
-        return f"**{match.name}** — {'Alive' if match.is_alive else 'Dead'}"
+        return f"**{match.name}** â€” {'Alive' if match.is_alive else 'Dead'}"
     alive = [m for m in team.members if m.is_alive]
     dead = [m for m in team.members if not m.is_alive]
-    lines = [f"> **{m.name}** — Alive" for m in alive] + \
-            [f"> **{m.name}** — Dead" for m in dead]
+    lines = [f"> **{m.name}** â€” Alive" for m in alive] + \
+            [f"> **{m.name}** â€” Dead" for m in dead]
     return f"**Team Status ({len(alive)}/{len(team.members)} alive)**\n" + "\n".join(lines)
 
 
 async def _cmd_leader(socket, args: str) -> str:
     """
-    !leader           — promote self
-    !leader <name>    — promote teammate by name
+    !leader           â€” promote self
+    !leader <name>    â€” promote teammate by name
     """
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -576,7 +892,7 @@ async def _cmd_leader(socket, args: str) -> str:
         return f"Could not transfer leadership: `{e}`"
 
 
-# ── Event Commands ────────────────────────────────────────────────────────────
+#  Event Commands
 async def _cmd_events(socket, name: str) -> str:
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
@@ -591,7 +907,7 @@ async def _cmd_events(socket, name: str) -> str:
             active_types.add(m.type)
 
     if not active_types:
-        return f"**{name}** — No active events right now."
+        return f"**{name}** â€” No active events right now."
 
     now = _time_module.time()
     for type_id in active_types:
@@ -606,9 +922,9 @@ async def _cmd_events(socket, name: str) -> str:
     for type_id in sorted(active_types):
         elapsed_s = int(now - _event_first_seen[type_id])
         age = f"{elapsed_s}s" if elapsed_s < 60 else f"{elapsed_s // 60}m {elapsed_s % 60}s"
-        lines.append(f"> **{EVENT_TYPES[type_id]}** — active for {age}")
+        lines.append(f"> **{EVENT_TYPES[type_id]}** â€” active for {age}")
 
-    return f"**{name} — Active Events**\n" + "\n".join(lines)
+    return f"**{name} â€” Active Events**\n" + "\n".join(lines)
 
 
 async def _cmd_heli(socket, name: str) -> str:
@@ -617,9 +933,9 @@ async def _cmd_heli(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     helis = list({m.type: m for m in markers if m.type == 3}.values())
     if not helis:
-        return f"**{name}** — No Patrol Helicopter on the map right now."
+        return f"**{name}** â€” No Patrol Helicopter on the map right now."
     h = helis[0]
-    return f"**{name} — Patrol Helicopter**\n> On the map — Position: `{int(h.x)}, {int(h.y)}`"
+    return f"**{name} â€” Patrol Helicopter**\n> On the map â€” Position: `{int(h.x)}, {int(h.y)}`"
 
 
 async def _cmd_cargo(socket, name: str) -> str:
@@ -628,9 +944,9 @@ async def _cmd_cargo(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ships = list({m.type: m for m in markers if m.type == 4}.values())
     if not ships:
-        return f"**{name}** — No Cargo Ship on the map right now."
+        return f"**{name}** â€” No Cargo Ship on the map right now."
     s = ships[0]
-    return f"**{name} — Cargo Ship**\n> On the map — Position: `{int(s.x)}, {int(s.y)}`"
+    return f"**{name} â€” Cargo Ship**\n> On the map â€” Position: `{int(s.x)}, {int(s.y)}`"
 
 
 async def _cmd_chinook(socket, name: str) -> str:
@@ -639,9 +955,9 @@ async def _cmd_chinook(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ch47s = list({m.type: m for m in markers if m.type == 7}.values())
     if not ch47s:
-        return f"**{name}** — No Chinook CH-47 on the map right now."
+        return f"**{name}** â€” No Chinook CH-47 on the map right now."
     c = ch47s[0]
-    return f"**{name} — Chinook CH-47**\n> On the map — Position: `{int(c.x)}, {int(c.y)}`"
+    return f"**{name} â€” Chinook CH-47**\n> On the map â€” Position: `{int(c.x)}, {int(c.y)}`"
 
 
 async def _cmd_large(socket, name: str) -> str:
@@ -659,10 +975,10 @@ async def _cmd_large(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} — Large Oil Rig**\n"
+                f"**{name} â€” Large Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} — Large Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} â€” Large Oil Rig**\n> No locked crate active on the map right now."
 
     if 60 not in _event_first_seen:
         _event_first_seen[60] = now
@@ -673,13 +989,13 @@ async def _cmd_large(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} — Large Oil Rig**\n"
-            f"> Locked Crate active — unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx — based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} â€” Large Oil Rig**\n"
+            f"> Locked Crate active â€” unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx â€” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     else:
         return (
-            f"**{name} — Large Oil Rig**\n"
+            f"**{name} â€” Large Oil Rig**\n"
             f"> Locked Crate should be **unlocked** (crate active for {_fmt_elapsed(elapsed)})"
         )
 
@@ -699,10 +1015,10 @@ async def _cmd_small(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} — Small Oil Rig**\n"
+                f"**{name} â€” Small Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} — Small Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} â€” Small Oil Rig**\n> No locked crate active on the map right now."
 
     if 61 not in _event_first_seen:
         _event_first_seen[61] = now
@@ -713,120 +1029,18 @@ async def _cmd_small(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} — Small Oil Rig**\n"
-            f"> Locked Crate active — unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx — based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} â€” Small Oil Rig**\n"
+            f"> Locked Crate active â€” unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx â€” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     return (
-        f"**{name} — Small Oil Rig**\n"
+        f"**{name} â€” Small Oil Rig**\n"
         f"> Locked Crate should be **unlocked** (active for {_fmt_elapsed(elapsed)})"
     )
 
 
-# ── Game Info Commands (static data) ──────────────────────────────────────────
-_CRAFT_DATA = {
-    "assault rifle": {"Metal Frags": 50, "HQM": 1, "Wood": 200, "Springs": 4},
-    "ak47": {"Metal Frags": 50, "HQM": 1, "Wood": 200, "Springs": 4},
-    "bolt action rifle": {"Metal Frags": 25, "HQM": 3, "Wood": 50, "Springs": 4},
-    "semi-automatic rifle": {"Metal Frags": 450, "HQM": 4, "Springs": 2},
-    "lr-300": {"Metal Frags": 30, "HQM": 2, "Wood": 100, "Springs": 3},
-    "mp5": {"Metal Frags": 500, "Springs": 3, "Empty Tins": 2},
-    "thompson": {"Metal Frags": 450, "Wood": 100, "Springs": 4},
-    "python": {"Metal Frags": 350, "HQM": 15, "Springs": 4},
-    "revolver": {"Metal Frags": 125, "Springs": 1},
-    "pump shotgun": {"Metal Frags": 100, "Wood": 75, "Springs": 4},
-    "rocket launcher": {"Metal Frags": 50, "HQM": 4, "Wood": 200, "Springs": 4},
-    "rocket": {"Explosives": 10, "Metal Pipe": 2, "Gun Powder": 150},
-    "c4": {"Explosives": 20, "Tech Trash": 2, "Cloth": 5},
-    "satchel charge": {"Beancan Grenade": 4, "Small Stash": 1, "Rope": 1},
-    "f1 grenade": {"Metal Frags": 50, "Gun Powder": 60},
-    "beancan grenade": {"Metal Frags": 60, "Gun Powder": 40},
-    "stone wall": {"Stone": 300},
-    "sheet metal wall": {"Metal Frags": 200},
-    "armored wall": {"HQM": 25, "Metal Frags": 100},
-    "wood wall": {"Wood": 200},
-    "furnace": {"Stone": 200, "Wood": 100, "Low Grade": 50},
-    "large furnace": {"Stone": 500, "Wood": 500, "Low Grade": 75},
-    "workbench t1": {"Wood": 500, "Stone": 100, "Metal Frags": 50},
-    "workbench t2": {"Metal Frags": 500, "HQM": 20, "Scrap": 250},
-    "workbench t3": {"Metal Frags": 1000, "HQM": 100, "Scrap": 500},
-}
 
-_RESEARCH_DATA = {
-    "assault rifle": 500, "ak47": 500,
-    "bolt action rifle": 750,
-    "semi-automatic rifle": 125,
-    "lr-300": 500, "mp5": 250, "thompson": 125,
-    "python": 125, "revolver": 75,
-    "pump shotgun": 125, "rocket launcher": 500,
-    "c4": 500, "satchel charge": 75, "f1 grenade": 75,
-    "stone wall": 75, "sheet metal wall": 125, "armored wall": 500,
-    "furnace": 75, "large furnace": 125,
-    "workbench t1": 75, "workbench t2": 500, "workbench t3": 1500,
-}
-
-_RECYCLE_DATA = {
-    "assault rifle": {"Metal Frags": 25, "HQM": 1, "Springs": 2},
-    "bolt action rifle": {"Metal Frags": 13, "HQM": 2, "Springs": 2},
-    "semi-automatic rifle": {"Metal Frags": 225, "HQM": 2, "Springs": 1},
-    "rocket launcher": {"Metal Frags": 25, "HQM": 2, "Springs": 2},
-    "pump shotgun": {"Metal Frags": 50, "Springs": 2},
-    "revolver": {"Metal Frags": 63, "Springs": 1},
-    "sheet metal door": {"Metal Frags": 75},
-    "armored door": {"HQM": 13, "Metal Frags": 50},
-    "sheet metal wall": {"Metal Frags": 100},
-    "armored wall": {"HQM": 13, "Metal Frags": 50},
-    "gears": {"Metal Frags": 25},
-    "pipe": {"Metal Frags": 13},
-    "springs": {"Metal Frags": 13},
-    "tech trash": {"HQM": 1, "Scrap": 13},
-}
-
-_DECAY_DATA = {
-    "twig wall": 1, "twig foundation": 1,
-    "wood wall": 3, "wood foundation": 3, "wood door": 3,
-    "stone wall": 5, "stone foundation": 5,
-    "sheet metal wall": 8, "sheet metal door": 8,
-    "armored wall": 12, "armored door": 12,
-    "furnace": 6, "large furnace": 6,
-    "sleeping bag": 24, "bed": 24,
-    "tool cupboard": 24, "tc": 24,
-}
-
-_UPKEEP_DATA = {
-    "wood wall": {"Wood": 7},
-    "wood foundation": {"Wood": 7},
-    "stone wall": {"Stone": 5},
-    "stone foundation": {"Stone": 5},
-    "sheet metal wall": {"Metal Frags": 3},
-    "sheet metal foundation": {"Metal Frags": 3},
-    "armored wall": {"HQM": 1},
-    "armored foundation": {"HQM": 1},
-}
-
-_CCTV_DATA = {
-    "airfield": ["AIRFIELDLOOKOUT1", "AIRFIELDLOOKOUT2", "AIRFIELDHANGAR1", "AIRFIELDHANGAR2", "AIRFIELDTARMAC"],
-    "bandit camp": ["BANDITCAMP1", "BANDITCAMP2", "BANDITCAMP3"],
-    "dome": ["DOME1", "DOME2"],
-    "gas station": ["GASSTATION1"],
-    "harbour": ["HARBOUR1", "HARBOUR2"],
-    "junkyard": ["JUNKYARD1", "JUNKYARD2"],
-    "launch site": ["LAUNCHSITE1", "LAUNCHSITE2", "LAUNCHSITE3", "LAUNCHSITE4", "ROCKETFACTORY1"],
-    "lighthouse": ["LIGHTHOUSE1"],
-    "military tunnel": ["MILITARYTUNNEL1", "MILITARYTUNNEL2", "MILITARYTUNNEL3", "MILITARYTUNNEL4", "MILITARYTUNNEL5", "MILITARYTUNNEL6"],
-    "oil rig": ["OILRIG1", "OILRIG1L1", "OILRIG1L2", "OILRIG1L3", "OILRIG1L4", "OILRIG1DOCK"],
-    "large oil rig": ["OILRIG2", "OILRIG2L1", "OILRIG2L2", "OILRIG2L3", "OILRIG2L4", "OILRIG2L5", "OILRIG2L6", "OILRIG2DOCK"],
-    "outpost": ["OUTPOST1", "OUTPOST2", "OUTPOST3"],
-    "power plant": ["POWERPLANT1", "POWERPLANT2", "POWERPLANT3", "POWERPLANT4"],
-    "satellite dish": ["SATELLITEDISH1", "SATELLITEDISH2", "SATELLITEDISH3"],
-    "sewer branch": ["SEWERBRANCH1", "SEWERBRANCH2"],
-    "supermarket": ["SUPERMARKET1"],
-    "train yard": ["TRAINYARD1", "TRAINYARD2", "TRAINYARD3"],
-    "water treatment": ["WATERTREATMENT1", "WATERTREATMENT2", "WATERTREATMENT3", "WATERTREATMENT4", "WATERTREATMENT5"],
-    "mining outpost": ["MININGOUTPOST1"],
-    "fishing village": ["FISHINGVILLAGE1"],
-}
-
+# Game Info Commands (imported from rust_info_db.py)
 
 def _fuzzy_match(query: str, data: dict):
     key = query.lower().strip()
@@ -841,7 +1055,7 @@ def _fuzzy_match(query: str, data: dict):
 def _cmd_craft(args: str) -> str:
     if not args:
         return "Usage: `!craft <item>`  e.g. `!craft rocket`"
-    k, data = _fuzzy_match(args, _CRAFT_DATA)
+    k, data = _fuzzy_match(args, CRAFT_DATA)
     if not data:
         return f"No craft data for `{args}`."
     return f"**Craft: {k.title()}**\n> " + ", ".join(f"**{v}x {n}**" for n, v in data.items())
@@ -850,7 +1064,7 @@ def _cmd_craft(args: str) -> str:
 def _cmd_recycle(args: str) -> str:
     if not args:
         return "Usage: `!recycle <item>`"
-    k, data = _fuzzy_match(args, _RECYCLE_DATA)
+    k, data = _fuzzy_match(args, RECYCLE_DATA)
     if not data:
         return f"No recycle data for `{args}`."
     return f"**Recycle: {k.title()}**\n> " + ", ".join(f"**{v}x {n}**" for n, v in data.items())
@@ -859,7 +1073,7 @@ def _cmd_recycle(args: str) -> str:
 def _cmd_research(args: str) -> str:
     if not args:
         return "Usage: `!research <item>`"
-    k, cost = _fuzzy_match(args, _RESEARCH_DATA)
+    k, cost = _fuzzy_match(args, RESEARCH_DATA)
     if cost is None:
         return f"No research data for `{args}`."
     return f"**Research: {k.title()}**\n> Cost: **{cost} Scrap**"
@@ -868,7 +1082,7 @@ def _cmd_research(args: str) -> str:
 def _cmd_decay(args: str) -> str:
     if not args:
         return "Usage: `!decay <item>`"
-    k, hours = _fuzzy_match(args, _DECAY_DATA)
+    k, hours = _fuzzy_match(args, DECAY_DATA)
     if hours is None:
         return f"No decay data for `{args}`."
     return f"**Decay: {k.title()}**\n> Full HP decays in **{hours}h**"
@@ -877,7 +1091,7 @@ def _cmd_decay(args: str) -> str:
 def _cmd_upkeep_item(args: str) -> str:
     if not args:
         return "Usage: `!upkeep <item>`"
-    k, data = _fuzzy_match(args, _UPKEEP_DATA)
+    k, data = _fuzzy_match(args, UPKEEP_DATA)
     if not data:
         return f"No upkeep data for `{args}`."
     cost = ", ".join(f"**{v}x {n}**" for n, v in data.items())
@@ -888,10 +1102,10 @@ def _cmd_item(args: str) -> str:
     if not args:
         return "Usage: `!item <name>`"
     lines = []
-    _, craft = _fuzzy_match(args, _CRAFT_DATA)
-    _, research = _fuzzy_match(args, _RESEARCH_DATA)
-    _, recycle = _fuzzy_match(args, _RECYCLE_DATA)
-    _, decay = _fuzzy_match(args, _DECAY_DATA)
+    _, craft = _fuzzy_match(args, CRAFT_DATA)
+    _, research = _fuzzy_match(args, RESEARCH_DATA)
+    _, recycle = _fuzzy_match(args, RECYCLE_DATA)
+    _, decay = _fuzzy_match(args, DECAY_DATA)
     if not any([craft, research, recycle, decay]):
         return f"No data found for `{args}`."
     if craft:
@@ -907,15 +1121,15 @@ def _cmd_item(args: str) -> str:
 
 def _cmd_cctv(args: str) -> str:
     if not args:
-        keys = ", ".join(f"`{k}`" for k in sorted(_CCTV_DATA))
+        keys = ", ".join(f"`{k}`" for k in sorted(CCTV_DATA))
         return f"Usage: `!cctv <monument>`\nAvailable: {keys}"
-    k, codes = _fuzzy_match(args, _CCTV_DATA)
+    k, codes = _fuzzy_match(args, CCTV_DATA)
     if not codes:
         return f"No CCTV codes for `{args}`."
-    return f"**CCTV — {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
+    return f"**CCTV â€” {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
 
 
-# ── Game Q&A (fallback) ───────────────────────────────────────────────────────
+#  Game Q&A (fallback)
 def cmd_game_question(query: str) -> str:
     q = query.lower()
     qa = {
@@ -925,7 +1139,7 @@ def cmd_game_question(query: str) -> str:
         ("scrap", "farm"): "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
         ("best", "weapon", "early"): "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
         ("bradley", "apc"): "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
-        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists — bring armor",
+        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists â€” bring armor",
         ("radiation",): "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
     }
     for keywords, answer in qa.items():
@@ -934,7 +1148,7 @@ def cmd_game_question(query: str) -> str:
     return f"No answer for: *\"{query}\"*\n\nTry: `help`"
 
 
-# ── Helper Functions ──────────────────────────────────────────────────────────
+#  Helper Functions
 def _fmt_time(t) -> str:
     if isinstance(t, str):
         try:
