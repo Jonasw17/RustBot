@@ -12,8 +12,22 @@ from pathlib import Path
 from typing import Callable, Optional, Dict
 
 from rustplus import RustSocket, ServerDetails, FCMListener, ChatEvent, ChatEventPayload
+# Try to import alarm registration helper; optional fallback if voice_alerts unavailable
+try:
+    from voice_alerts import register_alarm
+except Exception:
+    def register_alarm(name, entity_id):
+        return False
 
 log = logging.getLogger("ServerManager")
+# Reduce overly-verbose pairing debug logs by default. Set to True for troubleshooting.
+PAIRING_VERBOSE = False
+if not PAIRING_VERBOSE:
+    # Raise effective level to INFO to suppress debug() calls in this module
+    try:
+        log.setLevel(logging.INFO)
+    except Exception:
+        pass
 
 ACTIVE_CONNECTIONS_FILE = Path("active_connections.json")
 
@@ -516,6 +530,21 @@ class MultiUserServerManager:
                     port = body.get("port", "28017")
                     name = body.get("name", ip)
                     player_token = int(body.get("playerToken", 0))
+
+                    # Detect alarm pairing payloads: heuristics for 'alarm' type or entity ids
+                    try:
+                        if isinstance(body, dict) and (body.get("type") == "alarm" or "entityId" in body or "entity_id" in body):
+                            alarm_name = body.get("name") or body.get("alarmName") or f"alarm_{body.get('entityId') or body.get('entity_id')}"
+                            alarm_entity = body.get("entityId") or body.get("entity_id")
+                            if alarm_entity:
+                                try:
+                                    server_key = f"{ip}:{port}"
+                                    register_alarm(alarm_name, alarm_entity, server=server_key, owner=discord_id)
+                                    log.info(f"Auto-registered alarm from pairing: {alarm_name} on {server_key} for {discord_id}")
+                                except Exception:
+                                    log.debug("Failed to auto-register alarm from pairing")
+                    except Exception:
+                        pass
 
                     log.debug(f"[DEBUG] Parsed server: {name} ({ip}:{port}), token: {player_token}")
 

@@ -40,6 +40,7 @@ COMMAND_CHANNEL      = int(os.getenv("COMMAND_CHANNEL_ID", "0"))
 NOTIFICATION_CHANNEL = int(os.getenv("NOTIFICATION_CHANNEL_ID", "0"))
 CHAT_RELAY_CHANNEL   = int(os.getenv("CHAT_RELAY_CHANNEL_ID", "0"))
 COMMAND_PREFIX       = "!"
+VOICE_CHANNEL_ID     = int(os.getenv("VOICE_CHANNEL_ID", "0"))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -59,6 +60,17 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 # UPDATED: Use multi-user managers
 user_manager = UserManager()
 manager = MultiUserServerManager(user_manager)
+# Voice alert manager (optional) - single configured voice channel for announcements
+voice_alert_manager = None
+try:
+    from voice_alerts import VoiceAlertManager
+    vcid = VOICE_CHANNEL_ID if VOICE_CHANNEL_ID else None
+    voice_alert_manager = VoiceAlertManager(vcid)
+except Exception as e:
+    log.warning(f"Could not initialize VoiceAlertManager: {e}")
+
+# Dict to track background monitoring tasks per server key (ip:port)
+_voice_monitor_tasks: dict = {}
 
 
 # ── Notification helper ───────────────────────────────────────────────────────
@@ -185,6 +197,37 @@ async def on_ready():
     bot.loop.create_task(manager.start_all_fcm_listeners(on_new_server_paired))
     log.info("Multi-user FCM listeners active")
 
+    # Start monitors for any already paired servers for registered users
+    async def _start_existing_monitors():
+        users = user_manager.list_users()
+        for u in users:
+            discord_id = u.get('discord_id')
+            if not discord_id:
+                continue
+            async def _connect_and_monitor(did):
+                try:
+                    # Ensure a socket exists for this user's active server
+                    try:
+                        await manager.ensure_connected_for_user(did)
+                    except Exception:
+                        # could not connect; skip
+                        return
+                    socket = manager.get_socket_for_user(did)
+                    active = manager.get_active_server_for_user(did)
+                    if socket and active and voice_alert_manager:
+                        server_key = f"{active.get('ip')}:{active.get('port', '28017')}"
+                        existing = _voice_monitor_tasks.get(server_key)
+                        if existing is None or existing.done():
+                            task = bot.loop.create_task(voice_alert_manager.start_monitoring(socket, bot, monitored_server=server_key))
+                            _voice_monitor_tasks[server_key] = task
+                            log.info(f"Started existing voice alarm monitor for {server_key}")
+                except Exception as e:
+                    log.warning(f"Could not start existing monitor for {did}: {e}")
+
+            bot.loop.create_task(_connect_and_monitor(discord_id))
+
+    bot.loop.create_task(_start_existing_monitors())
+
     # Show registration status
     user_count = len(user_manager.list_users())
     if user_count == 0:
@@ -237,6 +280,18 @@ async def on_new_server_paired(discord_id: str, server: dict):
     socket = manager.get_socket_for_user(discord_id)
     if socket:
         await _post_server_connect_embed(server, socket)
+        # Start voice/DM monitoring for this server if a VoiceAlertManager is configured
+        try:
+            if voice_alert_manager:
+                server_key = f"{server.get('ip')}:{server.get('port', '28017')}"
+                # Avoid creating duplicate tasks
+                existing = _voice_monitor_tasks.get(server_key)
+                if existing is None or existing.done():
+                    task = bot.loop.create_task(voice_alert_manager.start_monitoring(socket, bot, monitored_server=server_key))
+                    _voice_monitor_tasks[server_key] = task
+                    log.info(f"Started voice alarm monitor for {server_key}")
+        except Exception as e:
+            log.warning(f"Could not start voice alarm monitor: {e}")
 
 
 async def _on_timer_expired(label: str, text: str):

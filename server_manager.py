@@ -16,12 +16,18 @@ Your playerToken is UNIQUE per server — that's why we need FCM pairing.
 import asyncio
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Callable, Optional
 
 from rustplus import RustSocket, ServerDetails, FCMListener, ChatEvent, ChatEventPayload
+# Import alarm registration helper
+try:
+    from voice_alerts import register_alarm
+except Exception:
+    # optional: voice_alerts may not be available in some contexts
+    def register_alarm(name, entity_id):
+        return False
 
 log = logging.getLogger("ServerManager")
 
@@ -245,11 +251,27 @@ class ServerManager:
                     steam_id     = int(body.get("playerId", 0))
                     player_token = int(body.get("playerToken", 0))
 
+                    # Detect alarm pairing payloads (e.g., type == 'alarm' or contains entityId/entity_id)
+                    try:
+                        if body.get("type") == "alarm" or "entityId" in body or "entity_id" in body or (isinstance(data, dict) and ("entityId" in data or "entity_id" in data)):
+                            alarm_name = body.get("name") or body.get("alarmName") or f"alarm_{body.get('entityId') or body.get('entity_id')}"
+                            alarm_entity = body.get("entityId") or body.get("entity_id") or (data.get("entityId") if isinstance(data, dict) else None)
+                            if alarm_entity:
+                                try:
+                                    server_key = f"{ip}:{port}"
+                                    # No explicit owner in single-user server_manager; store server only
+                                    register_alarm(alarm_name, alarm_entity, server=server_key, owner=None)
+                                    log.info(f"Auto-registered alarm from pairing: {alarm_name} on {server_key}")
+                                except Exception:
+                                    log.debug("Failed to auto-register alarm from pairing")
+                    except Exception:
+                        pass
+
                     if not ip or not steam_id or not player_token:
                         log.warning(f"Incomplete pairing data received: {body}")
                         return
 
-                    log.info(f"📲 Pairing notification: {name} ({ip}:{port})")
+                    log.info(f"Pairing notification: {name} ({ip}:{port})")
 
                     # Save server to registry
                     server = self.add_server(ip, port, name, steam_id, player_token)

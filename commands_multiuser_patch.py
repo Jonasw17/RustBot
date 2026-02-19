@@ -13,9 +13,10 @@ Replace the corresponding functions in commands.py with these versions.
 """
 
 from typing import Optional
-from rustplus import RustSocket
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager
+from voice_alerts import cmd_alarm_trigger
+
 
 # ── UPDATED handle_query ──────────────────────────────────────────────────────
 async def handle_query(
@@ -55,6 +56,121 @@ async def handle_query(
     # Meta / no-socket commands
     if cmd in ("servers", "server"):
         return cmd_servers_multiuser(manager, user_manager, discord_id)
+    if cmd in ("alarm", "alarms"):
+        # Support: `!alarm list`, `!alarm lists`, `!alarms`, and admin-only `!alarm trigger <name>`
+        # If user used the plural command, treat as list immediately.
+        if cmd == "alarms":
+            try:
+                from voice_alerts import cmd_alarm_list
+                return await cmd_alarm_list()
+            except Exception as e:
+                return f"Could not list alarms: {e}"
+
+        # Otherwise handle `!alarm <sub>` forms
+        subparts = args.split(None, 1)
+        sub = subparts[0].lower() if subparts else ""
+        rest = subparts[1].strip() if len(subparts) > 1 else ""
+
+        # Admin-only: trigger alarm actions manually (DM + voice) for testing
+        if sub == "trigger":
+            # Must be invoked from Discord (ctx) and by a server administrator
+            if ctx is None:
+                return "This command must be run from Discord by a server administrator."
+            try:
+                # guild_permissions exists for Member objects; require administrator
+                perms = getattr(ctx.author, 'guild_permissions', None)
+                if not perms or not getattr(perms, 'administrator', False):
+                    return "Admin-only: you need the Administrator permission to run this command."
+            except Exception:
+                return "Admin-only: you need the Administrator permission to run this command."
+
+            if not rest:
+                return "Usage: `!alarm trigger <name>`"
+
+            # Call the test helper to DM owner and run voice announce.
+            # ctx is a discord.Message; it doesn't have a .bot attribute in older discord.py versions,
+            # so resolve the bot client safely: prefer ctx.bot if present, otherwise import the running
+            # `bot` instance from `bot.py` (import inside this block to avoid circular imports).
+            try:
+                if ctx is not None and hasattr(ctx, 'bot') and getattr(ctx, 'bot'):
+                    bot_client = ctx.bot
+                else:
+                    # Import at runtime to avoid circular import at module load
+                    from bot import bot as bot_client
+
+                result = await cmd_alarm_trigger(rest, bot_client)
+                return result
+            except Exception as e:
+                return f"Failed to trigger alarm: {e}"
+
+        # Admin-only: show stored owner info for an alarm (debugging helper)
+        if sub == "ownerinfo":
+            if ctx is None:
+                return "This command must be run from Discord by a server administrator."
+            try:
+                perms = getattr(ctx.author, 'guild_permissions', None)
+                if not perms or not getattr(perms, 'administrator', False):
+                    return "Admin-only: you need the Administrator permission to run this command."
+            except Exception:
+                return "Admin-only: you need the Administrator permission to run this command."
+
+            if not rest:
+                return "Usage: `!alarm ownerinfo <name|id>`"
+
+            try:
+                from voice_alerts import get_alarm_owner_info
+                return get_alarm_owner_info(rest)
+            except Exception as e:
+                return f"Could not retrieve owner info: {e}"
+
+        # Admin-only: set the owner for an alarm
+        if sub == "setowner":
+            if ctx is None:
+                return "This command must be run from Discord by a server administrator."
+            try:
+                perms = getattr(ctx.author, 'guild_permissions', None)
+                if not perms or not getattr(perms, 'administrator', False):
+                    return "Admin-only: you need the Administrator permission to run this command."
+            except Exception:
+                return "Admin-only: you need the Administrator permission to run this command."
+
+            parts = rest.split(None, 1)
+            if len(parts) != 2:
+                return "Usage: `!alarm setowner <name|id> <owner_id>`"
+            identifier, owner_id = parts[0], parts[1]
+            try:
+                from voice_alerts import set_alarm_owner
+                return set_alarm_owner(identifier, owner_id)
+            except Exception as e:
+                return f"Could not set owner: {e}"
+
+        # Admin-only: diagnostics for voice/notification channels
+        if sub == "diag":
+            if ctx is None:
+                return "This command must be run from Discord by a server administrator."
+            try:
+                perms = getattr(ctx.author, 'guild_permissions', None)
+                if not perms or not getattr(perms, 'administrator', False):
+                    return "Admin-only: you need the Administrator permission to run this command."
+            except Exception:
+                return "Admin-only: you need the Administrator permission to run this command."
+
+            try:
+                from voice_alerts import get_voice_and_notification_diag
+                return get_voice_and_notification_diag(ctx.bot if hasattr(ctx, 'bot') else __import__('bot').bot)
+            except Exception as e:
+                return f"Could not run diag: {e}"
+
+        # Accept both 'list' and 'lists' as synonyms
+        if sub in ("list", "lists"):
+            try:
+                from voice_alerts import cmd_alarm_list
+                return await cmd_alarm_list()
+            except Exception as e:
+                return f"Could not list alarms: {e}"
+
+        # fallback/help - only listing and trigger supported
+        return "Usage: `!alarm list` / `!alarms` to view alarms, or `!alarm trigger <name>` (admin only) to test."
     if cmd == "clear":
         return await cmd_clear(args, ctx)
     if cmd == "switch":
@@ -214,8 +330,7 @@ async def cmd_smart_switch_multiuser(
         else:
             result = await socket.set_entity_value(entity_id, False)
 
-        # Check for errors
-        from rustplus import RustResponse
+        # Check for errors (result object may expose an error attribute)
         if hasattr(result, 'error') and result.error:
             return f"Error: {result.error}"
 
@@ -237,7 +352,7 @@ async def cmd_smart_switch_multiuser(
 import logging
 from commands import (
     cmd_clear, cmd_help, cmd_timer, cmd_game_question,
-    _dispatch_live, _switches, _resolve_switch
+    _dispatch_live
 )
 
 log = logging.getLogger("Commands")
