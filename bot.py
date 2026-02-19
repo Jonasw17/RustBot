@@ -1,14 +1,12 @@
 """
-bot.py - IMPROVED VERSION with Connection Health Monitoring
+bot.py - Multi-User Rust+ Discord Bot
 ────────────────────────────────────────────────────────────────────────────
-Multi-user Rust+ Discord bot with enhanced reliability and error recovery.
-
-NEW FEATURES:
+FEATURES:
+✅ Multi-user architecture only (no single-user code)
+✅ Auto-switch to server when only 1 user + 1 server
+✅ Auto-reconnect to last server on bot restart
 ✅ Connection health monitoring
-✅ Automatic reconnection on failure
 ✅ Command retry logic
-✅ Graceful WebSocket handling
-✅ Enhanced error logging
 ✅ Per-user connection management
 """
 
@@ -26,7 +24,7 @@ from rustplus import RustError
 
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
 from server_manager_multiuser import MultiUserServerManager
-from commands_multiuser_patch import handle_query
+from commands import handle_query
 from timers import timer_manager
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -107,6 +105,56 @@ async def check_connection_health(discord_id: str) -> bool:
     return False
 
 
+async def auto_connect_single_user_server():
+    """
+    Auto-connect logic:
+    - If only 1 registered user with 1 paired server → auto-connect
+    - Reconnect to last active server on bot restart
+    """
+    users = user_manager.list_users()
+
+    if len(users) == 1:
+        discord_id = users[0]["discord_id"]
+        servers = manager.list_servers_for_user(discord_id)
+
+        if len(servers) == 1:
+            # Only 1 user with 1 server - auto-connect
+            server = servers[0]
+            try:
+                log.info(f"Auto-connecting to {server['name']} (1 user, 1 server)")
+                await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                return True
+            except Exception as e:
+                log.error(f"Auto-connect failed: {e}")
+                return False
+
+    # Try to reconnect to last active servers for all users
+    reconnected = False
+    for discord_id in [u["discord_id"] for u in users]:
+        # Check if user has an active server preference
+        active_server = manager.get_active_server_for_user(discord_id)
+        if active_server:
+            try:
+                log.info(f"Reconnecting to last server for user {discord_id}: {active_server['name']}")
+                await manager.connect_for_user(discord_id, active_server['ip'], active_server['port'])
+                reconnected = True
+            except Exception as e:
+                log.warning(f"Failed to reconnect user {discord_id}: {e}")
+        else:
+            # No active server, try first available
+            servers = manager.list_servers_for_user(discord_id)
+            if servers:
+                server = servers[0]
+                try:
+                    log.info(f"Connecting to first available server for user {discord_id}: {server['name']}")
+                    await manager.connect_for_user(discord_id, server['ip'], server['port'])
+                    reconnected = True
+                except Exception as e:
+                    log.warning(f"Failed to connect user {discord_id}: {e}")
+
+    return reconnected
+
+
 async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retries=2):
     """Execute command with automatic retry on connection failure"""
 
@@ -136,7 +184,7 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
             if attempt < max_retries - 1:
                 log.warning(f"Command timed out (attempt {attempt + 1}), retrying...")
             else:
-                return "Command timed out. The server may be slow to respond."
+                return "⚠️ Command timed out. The server may be slow to respond."
 
         except Exception as e:
             if attempt < max_retries - 1:
@@ -149,12 +197,12 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
             else:
                 log.error(f"Command failed after {max_retries} attempts: {e}")
                 return (
-                    f"**Command failed**: Connection issue.\n"
+                    f"⚠️ **Command failed**: Connection issue.\n"
                     f"> Try `!servers` to verify connection status.\n"
                     f"> Error: `{str(e)[:100]}`"
                 )
 
-    return "Command execution failed after multiple attempts."
+    return "⚠️ Command execution failed after multiple attempts."
 
 
 # ── Notification helper ───────────────────────────────────────────────────────
@@ -290,10 +338,11 @@ async def on_ready():
 
     # Show registration status
     user_count = len(user_manager.list_users())
+
     if user_count == 0:
-        log.info("No users registered yet")
+        log.info("⚠️  No users registered yet")
         await notify(discord.Embed(
-            title="Bot Online - Multi-User Mode",
+            title="🤖 Bot Online - Multi-User Mode",
             description=(
                 "No users registered yet.\n\n"
                 "**To register:**\n"
@@ -304,12 +353,27 @@ async def on_ready():
             color=0xCE422B,
         ))
     else:
-        log.info(f"✅ {user_count} user(s) registered and ready")
-        await notify(discord.Embed(
-            title="Bot Online - Multi-User Mode",
-            description=f"**{user_count}** user(s) registered and ready!",
-            color=0x00FF00,
-        ))
+        log.info(f"✅ {user_count} user(s) registered")
+
+        # Auto-connect to servers
+        await asyncio.sleep(2)  # Brief delay for stability
+        reconnected = await auto_connect_single_user_server()
+
+        if reconnected:
+            await notify(discord.Embed(
+                title="🤖 Bot Online - Multi-User Mode",
+                description=f"**{user_count}** user(s) registered\n✅ Auto-connected to servers",
+                color=0x00FF00,
+            ))
+        else:
+            await notify(discord.Embed(
+                title="🤖 Bot Online - Multi-User Mode",
+                description=(
+                    f"**{user_count}** user(s) registered\n"
+                    f"⚠️ No active servers - pair one in-game"
+                ),
+                color=0xFFA500,
+            ))
 
     log.info("Bot ready! 🚀")
 
@@ -317,9 +381,9 @@ async def on_ready():
 def _log_channel_config():
     def _ch(cid):
         if not cid:
-            return "Not set"
+            return "❌ not set"
         ch = bot.get_channel(cid)
-        return f"  #{ch.name}" if ch else f"  ID {cid} not found"
+        return f"✅ #{ch.name}" if ch else f"⚠️  ID {cid} not found"
 
     log.info("Channel configuration:")
     log.info(f"  Commands      → {_ch(COMMAND_CHANNEL)}")
@@ -334,7 +398,7 @@ async def on_new_server_paired(discord_id: str, server: dict):
         return
 
     name = server.get("name", server["ip"])
-    log.info(f"New server paired by {user['discord_name']}: {name}")
+    log.info(f"📲 New server paired by {user['discord_name']}: {name}")
 
     # Get the socket for this user
     socket = manager.get_socket_for_user(discord_id)
@@ -345,7 +409,7 @@ async def on_new_server_paired(discord_id: str, server: dict):
 async def _on_timer_expired(label: str, text: str):
     """Called by TimerManager when a timer fires"""
     embed = discord.Embed(
-        title="Timer Expired",
+        title="⏰ Timer Expired",
         description=f"**{text}**\n_(was set for {label})_",
         color=0xCE422B,
     )
@@ -378,7 +442,7 @@ async def _on_rust_chat_message(event):
 
     try:
         embed = discord.Embed(
-            title=f"{msg.name}",
+            title=f"💬 {msg.name}",
             description=msg.message,
             color=0xCE422B
         )
@@ -452,20 +516,28 @@ async def on_message(message: discord.Message):
         user = user_manager.get_user(discord_id)
         if user:
             servers = manager.list_servers_for_user(discord_id)
-            server_info = f"**{len(servers)}** paired server(s)" if servers else "No servers paired"
-            status_emoji = "✅" if servers else "⚠️"
+            active = manager.get_active_server_for_user(discord_id)
+
+            if active:
+                server_info = f"✅ Connected to **{active['name']}**"
+            elif servers:
+                server_info = f"⚠️ **{len(servers)}** paired server(s) - not connected"
+            else:
+                server_info = "❌ No servers paired"
+
+            status_emoji = "✅" if active else "⚠️" if servers else "❌"
         else:
-            server_info = "Not registered"
+            server_info = "❌ Not registered"
             status_emoji = "❌"
 
         await message.reply(
             f"**Rust+ Companion Bot - Multi-User Mode**\n"
-            f"> {status_emoji} Your status: {server_info}\n\n"
+            f"> {status_emoji} {server_info}\n\n"
             f"**Commands:**\n"
-            f"`register` · `whoami` · `servers` · `status` · `players` · `time`\n"
-            f"`map` · `team` · `events` · `wipe` · `switch <name>`\n"
-            f"`timer add <time> <label>` · `timers`\n"
-            f"`sson <id>` · `ssoff <id>`\n\n"
+            f"`register` - `whoami` - `servers` - `status` - `players` - `time`\n"
+            f"`map` - `team` - `events` - `wipe` - `switch <n>`\n"
+            f"`timer add <time> <label>` - `timers`\n"
+            f"`sson <id>` - `ssoff <id>`\n\n"
             f"**New user?** DM the bot with `!register`"
         )
         return
@@ -532,5 +604,5 @@ if __name__ == "__main__":
     if not DISCORD_TOKEN:
         raise ValueError("DISCORD_TOKEN not set in .env — see README")
 
-    log.info("Starting Rust+ Companion Bot...")
+    log.info("Starting Rust+ Companion Bot (Multi-User Architecture)...")
     bot.run(DISCORD_TOKEN, log_handler=None)

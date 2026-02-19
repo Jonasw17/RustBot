@@ -1,7 +1,9 @@
 """
 commands.py
 ────────────────────────────────────────────────────────────────────────────
-All !command handlers.
+All !command handlers - MULTI-USER ONLY architecture.
+
+All old single-user code removed.
 """
 
 import asyncio
@@ -13,35 +15,26 @@ import discord
 from pathlib import Path as _Path
 from datetime import datetime, timezone
 from rustplus import RustError
-from server_manager import ServerManager
-from timers import timer_manager
+from typing import Optional
 
-from bot import user_manager
-from multi_user_auth import cmd_register, cmd_whoami, cmd_users, cmd_unregister
-from multi_user_auth import UserManager
 from server_manager_multiuser import MultiUserServerManager
-
+from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
+from timers import timer_manager
 
 log = logging.getLogger("Commands")
 
 _BOT_START_TIME = _time_module.time()
 
-# ── Clear Chat cmd ─────────────────────────────────────────────────────
+# ── Clear Chat cmd ────────────────────────────────────────────────────────────
 async def cmd_clear(args: str, ctx) -> str | None:
     """
     !clear [amount]  - Delete last N messages (default 10, max 1000)
     !clear all       - Delete all messages in channel (up to 1000)
-
-    Requires ctx to be the Discord message context.
     """
     if ctx is None:
         return "Clear command only works from Discord (not in-game)."
 
-    # If this is a DM channel, allow user to clear bot responses there without Manage Messages perm
-    is_dm = isinstance(ctx.channel, discord.DMChannel)
-
-    # Check if user has manage messages permission (only required in guild channels)
-    if not is_dm and not ctx.channel.permissions_for(ctx.author).manage_messages:
+    if not ctx.channel.permissions_for(ctx.author).manage_messages:
         return "You need **Manage Messages** permission to use this command."
 
     # Parse arguments
@@ -60,61 +53,15 @@ async def cmd_clear(args: str, ctx) -> str | None:
             return "Usage: `!clear [amount]` or `!clear all`\nExample: `!clear 50`"
 
     try:
-        if is_dm:
-            # Delete bot messages in this DM channel up to `amount`
-            deleted_count = 0
-            # Walk recent history; gather bot messages
-            to_delete = []
-            async for m in ctx.channel.history(limit=1000):
-                if m.author and m.author.bot:
-                    to_delete.append(m)
-                    if len(to_delete) >= amount:
-                        break
-
-            for m in to_delete:
-                try:
-                    await m.delete()
-                    deleted_count += 1
-                except Exception:
-                    # ignore individual deletion failures
-                    pass
-
-            # Delete the invoking command message if possible
-            try:
-                await ctx.delete()
-            except Exception:
-                pass
-
-            # Send confirmation message that self-deletes after 5 seconds
-            confirmation = await ctx.channel.send(
-                f"Cleared **{deleted_count}** message(s)."
-            )
-            await asyncio.sleep(5)
-            try:
-                await confirmation.delete()
-            except Exception:
-                pass
-
-            return None  # already informed the user
-
-        else:
-            # Delete messages (including the command message) in a guild channel
-            deleted = await ctx.channel.purge(limit=amount + 1)
-
-            # Send confirmation message that self-deletes after 5 seconds
-            confirmation = await ctx.channel.send(
-                f"Cleared **{len(deleted) - 1}** message(s)."
-            )
-            await asyncio.sleep(5)
-            await confirmation.delete()
-
-            return None  # Don't send another message since we already sent confirmation
-
+        deleted = await ctx.channel.purge(limit=amount + 1)
+        confirmation = await ctx.channel.send(f"Cleared **{len(deleted) - 1}** message(s).")
+        await asyncio.sleep(5)
+        await confirmation.delete()
+        return None
     except discord.Forbidden:
         return "Bot lacks **Manage Messages** permission in this channel."
     except discord.HTTPException as e:
         return f"Failed to clear messages: `{e}`"
-
 
 
 # ── Event timestamp cache ─────────────────────────────────────────────────────
@@ -138,7 +85,7 @@ def _save_event_cache(cache: dict):
 
 _event_first_seen: dict = _load_event_cache()
 
-# ── Smart Switch registry (name -> entity_id) ─────────────────────────────────
+# ── Smart Switch registry ─────────────────────────────────────────────────────
 _SWITCHES_FILE = _Path("switches.json")
 
 def _load_switches() -> dict:
@@ -158,19 +105,23 @@ def _save_switches(switches: dict):
 _switches: dict = _load_switches()
 
 
-# ── Router ────────────────────────────────────────────────────────────────────
+# ── Main Router ───────────────────────────────────────────────────────────────
 async def handle_query(
         query: str,
-        manager,
-        user_manager=None,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
         ctx=None,
-        discord_id=None
+        discord_id: Optional[str] = None
 ) -> str | tuple:
+    """
+    Main command router - MULTI-USER ONLY.
+    All commands use per-user credentials and connections.
+    """
     parts = query.strip().split(None, 1)
     cmd = parts[0].lower()
     args = parts[1].strip() if len(parts) > 1 else ""
 
-    # User registration commands (new)
+    # User registration commands
     if cmd == "register":
         return await cmd_register(ctx, user_manager)
     if cmd == "whoami":
@@ -182,17 +133,17 @@ async def handle_query(
 
     # Meta / no-socket commands
     if cmd in ("servers", "server"):
-        return cmd_servers_multiuser(manager)
+        return cmd_servers(manager, user_manager, discord_id)
     if cmd == "clear":
         return await cmd_clear(args, ctx)
     if cmd == "switch":
-        return await cmd_switch_multiuser(args, manager)
+        return await cmd_switch(args, manager, user_manager, discord_id)
     if cmd == "help":
         return cmd_help()
     if cmd in ("timer", "timers"):
         return await cmd_timer(args)
     if cmd in ("sson", "ssoff"):
-        return await cmd_smart_switch_multiuser(cmd, args, manager)
+        return await cmd_smart_switch(cmd, args, manager, user_manager, discord_id)
 
     # Commands needing a live socket
     live_cmds = {
@@ -205,14 +156,20 @@ async def handle_query(
     }
 
     if cmd in live_cmds:
-        active = manager.get_active()
+        # Check user registration
+        if not discord_id or not user_manager.has_user(discord_id):
+            return (
+                "You need to register first.\n"
+                "DM the bot with `!register` and attach your `rustplus.config.json` file."
+            )
+
+        # Get user's active server
+        active = manager.get_active_server_for_user(discord_id)
         if not active:
             return (
                 "No server connected.\n"
-                "Join a Rust server and press **ESC -> Session -> Pairing**."
+                "Join a Rust server and press **ESC → Rust+ → Pair Server**."
             )
-        if not user_manager.has_user(discord_id):
-            return "You need to register first. DM the bot with `!register`"
 
         try:
             await manager.ensure_connected_for_user(discord_id)
@@ -229,32 +186,57 @@ async def handle_query(
 
 
 # ── Meta Commands ─────────────────────────────────────────────────────────────
-def cmd_servers_multiuser(manager: ServerManager) -> str:
-    servers = manager.list_servers()
-    active  = manager.get_active()
+def cmd_servers(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """List servers paired by this user"""
+    if not discord_id or not user_manager.has_user(discord_id):
+        return (
+            "You need to register first.\n"
+            "DM the bot with `!register` to get started."
+        )
+
+    servers = manager.list_servers_for_user(discord_id)
+    active = manager.get_active_server_for_user(discord_id)
+
     if not servers:
         return (
             "**No servers paired yet.**\n"
-            "Join any Rust server and press **ESC -> Session -> Pairing**."
+            "Join any Rust server and press **ESC → Rust+ → Pair Server**."
         )
+
     lines = []
     for i, s in enumerate(servers, 1):
         is_active = active and s["ip"] == active["ip"] and s["port"] == active["port"]
         tag = "`active`" if is_active else f"`{i}.`"
         lines.append(f"{tag} **{s.get('name', s['ip'])}** — `{s['ip']}:{s['port']}`")
+
     return "**Your Paired Servers:**\n" + "\n".join(lines) + \
         "\n\nUse `!switch <name or number>` to switch."
 
 
-async def cmd_switch_multiuser(identifier: str, manager: ServerManager) -> str:
+async def cmd_switch(
+        identifier: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """Switch user's active server"""
     if not identifier:
         return "Usage: `!switch <server name or number>`"
-    server = manager.switch_to(identifier)
-    if not server:
-        return f"No server found matching `{identifier}`."
+
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first. DM the bot with `!register`"
+
     try:
-        await manager.connect(server["ip"], server["port"])
+        server = await manager.switch_server_for_user(discord_id, identifier)
+        if not server:
+            return f"No server found matching `{identifier}`."
         return f"Switched to **{server.get('name', server['ip'])}**"
+    except ValueError as e:
+        return str(e)
     except Exception as e:
         return f"Could not connect: `{e}`"
 
@@ -263,20 +245,20 @@ def cmd_help() -> str:
     return (
         "**Rust+ Companion Bot** — prefix: `!`\n\n"
         "**Server Info:**\n"
-        "`status` · `players` · `pop` · `time` · `map` · `wipe` · `uptime`\n\n"
+        "`status` - `players` - `pop` - `time` - `map` - `wipe` - `uptime`\n\n"
         "**Team:**\n"
-        "`team` · `online` · `offline` · `afk` · `alive [name]` · `leader [name]`\n\n"
+        "`team` - `online` - `offline` - `afk` - `alive [name]` - `leader [name]`\n\n"
         "**Events:**\n"
-        "`events` · `heli` · `cargo` · `chinook` · `large` · `small`\n\n"
+        "`events` - `heli` - `cargo` - `chinook` - `large` - `small`\n\n"
         "**Utilities:**\n"
-        "`timer add <time> <label>` · `timer remove <id>` · `timers`\n"
-        "`sson <name or id>` · `ssoff <name or id>`\n"
-        "`clear [amount]` · `clear all`\n\n"
+        "`timer add <time> <label>` - `timer remove <id>` - `timers`\n"
+        "`sson <name or id>` - `ssoff <name or id>`\n"
+        "`clear [amount]` - `clear all`\n\n"
         "**Game Info:**\n"
-        "`craft <item>` · `recycle <item>` · `research <item>`\n"
-        "`decay <item>` · `upkeep <item>` · `item <n>` · `cctv <monument>`\n\n"
-        "**Multi-Server:**\n"
-        "`servers` · `switch <name or #>`\n\n"
+        "`craft <item>` - `recycle <item>` - `research <item>`\n"
+        "`decay <item>` - `upkeep <item>` - `item <n>` - `cctv <monument>`\n\n"
+        "**Multi-User:**\n"
+        "`register` - `whoami` - `servers` - `switch <name or #>`\n\n"
         "**Q&A:** `!<question>`"
     )
 
@@ -287,17 +269,16 @@ async def cmd_timer(args: str) -> str:
         return timer_manager.list_timers()
 
     parts = args.split(None, 1)
-    sub   = parts[0].lower()
-    rest  = parts[1].strip() if len(parts) > 1 else ""
+    sub = parts[0].lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
 
     if sub == "add":
-        # !timer add 15m TC running low
         sub_parts = rest.split(None, 1)
         if not sub_parts:
             return "Usage: `!timer add <time> <label>`\nExample: `!timer add 15m TC is low`"
         duration = sub_parts[0]
-        label    = sub_parts[1] if len(sub_parts) > 1 else ""
-        ok, msg  = timer_manager.add(duration, label)
+        label = sub_parts[1] if len(sub_parts) > 1 else ""
+        ok, msg = timer_manager.add(duration, label)
         return msg
 
     if sub == "remove":
@@ -306,18 +287,20 @@ async def cmd_timer(args: str) -> str:
         ok, msg = timer_manager.remove(rest.split()[0])
         return msg
 
-    # Bare "!timer" shows list
     return timer_manager.list_timers()
 
 
 # ── Smart Switch Commands ─────────────────────────────────────────────────────
-async def cmd_smart_switch_multiuser(cmd: str, args: str, manager: ServerManager) -> str:
+async def cmd_smart_switch(
+        cmd: str,
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
     """
     !sson <name or entity_id>
     !ssoff <name or entity_id>
-
-    Entity IDs are registered via the pairing notification or stored manually
-    in switches.json as {"my tc light": 1234567}.
     """
     if not args:
         registered = ", ".join(f"`{k}` ({v})" for k, v in _switches.items())
@@ -325,6 +308,11 @@ async def cmd_smart_switch_multiuser(cmd: str, args: str, manager: ServerManager
             "\nNo switches registered yet. Add them to `switches.json` as `{\"name\": entity_id}`."
         return f"Usage: `!sson <name or id>` / `!ssoff <name or id>`{hint}"
 
+    # Check user registration
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    # Resolve switch name/ID
     entity_id = _resolve_switch(args)
     if entity_id is None:
         return (
@@ -333,24 +321,34 @@ async def cmd_smart_switch_multiuser(cmd: str, args: str, manager: ServerManager
             f"or use the entity ID directly."
         )
 
-    active = manager.get_active()
+    # Get active connection
+    active = manager.get_active_server_for_user(discord_id)
     if not active:
         return "No server connected."
 
     try:
-        await manager.ensure_connected()
-        socket = manager.get_socket()
+        await manager.ensure_connected_for_user(discord_id)
+        socket = manager.get_socket_for_user(discord_id)
+
         if cmd == "sson":
             result = await socket.set_entity_value(entity_id, True)
         else:
             result = await socket.set_entity_value(entity_id, False)
 
-        if isinstance(result, RustError):
-            return f"Error: {result.reason}"
+        # Check for errors
+        if hasattr(result, 'error') and result.error:
+            return f"Error: {result.error}"
 
-        state  = "ON" if cmd == "sson" else "OFF"
-        label  = args if args.isdigit() else f"{args} ({entity_id})"
+        state = "ON" if cmd == "sson" else "OFF"
+        label = args if args.isdigit() else f"{args} ({entity_id})"
         return f"Smart Switch **{label}** turned **{state}**."
+
+    except AttributeError as e:
+        return (
+            f"Smart switch control failed: {e}\n"
+            "Your rustplus library version may not support smart switches.\n"
+            "Try: `pip install --upgrade rustplus`"
+        )
     except Exception as e:
         return f"Could not toggle switch: `{e}`"
 
@@ -366,7 +364,7 @@ def _resolve_switch(identifier: str) -> int | None:
     return None
 
 
-# ── Live Dispatcher ───────────────────────────────────────────────────────────
+# ── Live Command Dispatcher ───────────────────────────────────────────────────
 async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tuple:
     name = active.get("name", active["ip"])
 
@@ -398,7 +396,7 @@ async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tup
     return "Unknown command."
 
 
-# ── Server Info ───────────────────────────────────────────────────────────────
+# ── Server Info Commands ──────────────────────────────────────────────────────
 async def _cmd_status(socket, name: str) -> str:
     info = await socket.get_info()
     if isinstance(info, RustError):
@@ -437,12 +435,12 @@ async def _cmd_time(socket, name: str) -> str:
     t = await socket.get_time()
     if isinstance(t, RustError):
         return f"Error: {t.reason}"
-    now_f   = float(t.time)
+    now_f = float(t.time)
     sunrise = float(t.sunrise)
-    sunset  = float(t.sunset)
-    is_day  = sunrise <= now_f < sunset
+    sunset = float(t.sunset)
+    is_day = sunrise <= now_f < sunset
     till_change = _time_till(now_f, sunset if is_day else sunrise)
-    phase   = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
+    phase = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
     return (
         f"**{name} — In-Game Time**\n"
         f"> **Now:** {_fmt_time(t.time)}\n"
@@ -458,11 +456,10 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         return f"Error: {info.reason}"
 
     name = active.get("name", active["ip"])
-    url  = f"https://rustmaps.com/map/{info.size}_{info.seed}"
+    url = f"https://rustmaps.com/map/{info.size}_{info.seed}"
 
     try:
         map_obj = await socket.get_map(add_icons=True, add_events=True, add_vending_machines=False)
-        # get_map() returns a RustMap object; .jpg_image is PIL Image or raw bytes
         img = map_obj.jpg_image
         if hasattr(img, "save"):
             buf = io.BytesIO()
@@ -486,7 +483,7 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         )
 
 
-# ── Team ──────────────────────────────────────────────────────────────────────
+# ── Team Commands ─────────────────────────────────────────────────────────────
 async def _cmd_team(socket) -> str:
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -496,7 +493,7 @@ async def _cmd_team(socket) -> str:
     lines = []
     for m in team.members:
         status = "Online" if m.is_online else "Offline"
-        alive  = "" if m.is_alive else " — Dead"
+        alive = "" if m.is_alive else " — Dead"
         lines.append(f"> **{m.name}** — {status}{alive}")
     return f"**Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
@@ -545,9 +542,9 @@ async def _cmd_alive(socket, args: str) -> str:
             return f"No team member found matching `{args}`."
         return f"**{match.name}** — {'Alive' if match.is_alive else 'Dead'}"
     alive = [m for m in team.members if m.is_alive]
-    dead  = [m for m in team.members if not m.is_alive]
+    dead = [m for m in team.members if not m.is_alive]
     lines = [f"> **{m.name}** — Alive" for m in alive] + \
-            [f"> **{m.name}** — Dead"  for m in dead]
+            [f"> **{m.name}** — Dead" for m in dead]
     return f"**Team Status ({len(alive)}/{len(team.members)} alive)**\n" + "\n".join(lines)
 
 
@@ -566,8 +563,6 @@ async def _cmd_leader(socket, args: str) -> str:
             return f"No team member found matching `{args}`."
         target = match
     else:
-        # Promote the bot's steam_id (the account that set up the bot)
-        # We use the first online member as fallback if no match
         target = next((m for m in team.members if m.is_online), None)
         if not target:
             return "No online team members found."
@@ -581,7 +576,7 @@ async def _cmd_leader(socket, args: str) -> str:
         return f"Could not transfer leadership: `{e}`"
 
 
-# ── Events ────────────────────────────────────────────────────────────────────
+# ── Event Commands ────────────────────────────────────────────────────────────
 async def _cmd_events(socket, name: str) -> str:
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
@@ -650,35 +645,25 @@ async def _cmd_chinook(socket, name: str) -> str:
 
 
 async def _cmd_large(socket, name: str) -> str:
-    """
-    Large Oil Rig locked crate unlocks 15 minutes after the scientists are killed.
-    We track when a Locked Crate marker (type 6) first appears on the map as a proxy.
-    """
+    """Large Oil Rig locked crate tracking"""
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
         return f"Error: {markers.reason}"
 
-    # Locked crate markers (type 6) appear when the crate is dropped / active
     crates = [m for m in markers if m.type == 6]
-
     now = _time_module.time()
-    LARGE_CRATE_UNLOCK_SECS = 15 * 60  # 15 minutes
+    LARGE_CRATE_UNLOCK_SECS = 15 * 60
 
     if not crates:
-        # Check cache for last-seen time
-        last = _event_first_seen.get(60)  # key 60 = large rig crate
+        last = _event_first_seen.get(60)
         if last:
             ago = int(now - last)
             return (
                 f"**{name} — Large Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return (
-            f"**{name} — Large Oil Rig**\n"
-            f"> No locked crate active on the map right now."
-        )
+        return f"**{name} — Large Oil Rig**\n> No locked crate active on the map right now."
 
-    # Use the first crate's first-seen time
     if 60 not in _event_first_seen:
         _event_first_seen[60] = now
         _save_event_cache(_event_first_seen)
@@ -700,14 +685,14 @@ async def _cmd_large(socket, name: str) -> str:
 
 
 async def _cmd_small(socket, name: str) -> str:
-    """Same logic as large for Small Oil Rig — crate unlocks after 15 min."""
+    """Small Oil Rig locked crate tracking"""
     markers = await socket.get_markers()
     if isinstance(markers, RustError):
         return f"Error: {markers.reason}"
 
-    crates  = [m for m in markers if m.type == 6]
-    now     = _time_module.time()
-    UNLOCK  = 15 * 60
+    crates = [m for m in markers if m.type == 6]
+    now = _time_module.time()
+    UNLOCK = 15 * 60
 
     if not crates:
         last = _event_first_seen.get(61)
@@ -723,7 +708,7 @@ async def _cmd_small(socket, name: str) -> str:
         _event_first_seen[61] = now
         _save_event_cache(_event_first_seen)
 
-    elapsed   = int(now - _event_first_seen[61])
+    elapsed = int(now - _event_first_seen[61])
     remaining = max(0, UNLOCK - elapsed)
 
     if remaining > 0:
@@ -738,45 +723,34 @@ async def _cmd_small(socket, name: str) -> str:
     )
 
 
-# ── Game Info (static data) ───────────────────────────────────────────────────
+# ── Game Info Commands (static data) ──────────────────────────────────────────
 _CRAFT_DATA = {
-    "assault rifle":        {"Metal Frags": 50,  "HQM": 1,  "Wood": 200, "Springs": 4},
-    "ak47":                 {"Metal Frags": 50,  "HQM": 1,  "Wood": 200, "Springs": 4},
-    "bolt action rifle":    {"Metal Frags": 25,  "HQM": 3,  "Wood": 50,  "Springs": 4},
-    "semi-automatic rifle": {"Metal Frags": 450, "HQM": 4,  "Springs": 2},
-    "lr-300":               {"Metal Frags": 30,  "HQM": 2,  "Wood": 100, "Springs": 3},
-    "mp5":                  {"Metal Frags": 500, "Springs": 3, "Empty Tins": 2},
-    "thompson":             {"Metal Frags": 450, "Wood": 100, "Springs": 4},
-    "python":               {"Metal Frags": 350, "HQM": 15, "Springs": 4},
-    "revolver":             {"Metal Frags": 125, "Springs": 1},
-    "pump shotgun":         {"Metal Frags": 100, "Wood": 75, "Springs": 4},
-    "rocket launcher":      {"Metal Frags": 50,  "HQM": 4,  "Wood": 200, "Springs": 4},
-    "rocket":               {"Explosives": 10,   "Metal Pipe": 2, "Gun Powder": 150},
-    "c4":                   {"Explosives": 20,   "Tech Trash": 2, "Cloth": 5},
-    "satchel charge":       {"Beancan Grenade": 4, "Small Stash": 1, "Rope": 1},
-    "f1 grenade":           {"Metal Frags": 50,  "Gun Powder": 60},
-    "beancan grenade":      {"Metal Frags": 60,  "Gun Powder": 40},
-    "stone wall":           {"Stone": 300},
-    "sheet metal wall":     {"Metal Frags": 200},
-    "armored wall":         {"HQM": 25, "Metal Frags": 100},
-    "wood wall":            {"Wood": 200},
-    "furnace":              {"Stone": 200, "Wood": 100, "Low Grade": 50},
-    "large furnace":        {"Stone": 500, "Wood": 500, "Low Grade": 75},
-    "workbench t1":         {"Wood": 500,  "Stone": 100, "Metal Frags": 50},
-    "workbench t2":         {
-        "Metal Frags": 500,
-        "HQM": 20,
-        "Scrap": 250,
-        "Basic Blueprint Fragments": 5
-    },
-    "workbench t3":         {
-        "Metal Frags": 1000,
-        "HQM": 100,
-        "Scrap": 500,
-        "Advanced Blueprint Fragments": 5
-    },
+    "assault rifle": {"Metal Frags": 50, "HQM": 1, "Wood": 200, "Springs": 4},
+    "ak47": {"Metal Frags": 50, "HQM": 1, "Wood": 200, "Springs": 4},
+    "bolt action rifle": {"Metal Frags": 25, "HQM": 3, "Wood": 50, "Springs": 4},
+    "semi-automatic rifle": {"Metal Frags": 450, "HQM": 4, "Springs": 2},
+    "lr-300": {"Metal Frags": 30, "HQM": 2, "Wood": 100, "Springs": 3},
+    "mp5": {"Metal Frags": 500, "Springs": 3, "Empty Tins": 2},
+    "thompson": {"Metal Frags": 450, "Wood": 100, "Springs": 4},
+    "python": {"Metal Frags": 350, "HQM": 15, "Springs": 4},
+    "revolver": {"Metal Frags": 125, "Springs": 1},
+    "pump shotgun": {"Metal Frags": 100, "Wood": 75, "Springs": 4},
+    "rocket launcher": {"Metal Frags": 50, "HQM": 4, "Wood": 200, "Springs": 4},
+    "rocket": {"Explosives": 10, "Metal Pipe": 2, "Gun Powder": 150},
+    "c4": {"Explosives": 20, "Tech Trash": 2, "Cloth": 5},
+    "satchel charge": {"Beancan Grenade": 4, "Small Stash": 1, "Rope": 1},
+    "f1 grenade": {"Metal Frags": 50, "Gun Powder": 60},
+    "beancan grenade": {"Metal Frags": 60, "Gun Powder": 40},
+    "stone wall": {"Stone": 300},
+    "sheet metal wall": {"Metal Frags": 200},
+    "armored wall": {"HQM": 25, "Metal Frags": 100},
+    "wood wall": {"Wood": 200},
+    "furnace": {"Stone": 200, "Wood": 100, "Low Grade": 50},
+    "large furnace": {"Stone": 500, "Wood": 500, "Low Grade": 75},
+    "workbench t1": {"Wood": 500, "Stone": 100, "Metal Frags": 50},
+    "workbench t2": {"Metal Frags": 500, "HQM": 20, "Scrap": 250},
+    "workbench t3": {"Metal Frags": 1000, "HQM": 100, "Scrap": 500},
 }
-
 
 _RESEARCH_DATA = {
     "assault rifle": 500, "ak47": 500,
@@ -792,20 +766,20 @@ _RESEARCH_DATA = {
 }
 
 _RECYCLE_DATA = {
-    "assault rifle":        {"Metal Frags": 25, "HQM": 1,  "Springs": 2},
-    "bolt action rifle":    {"Metal Frags": 13, "HQM": 2,  "Springs": 2},
-    "semi-automatic rifle": {"Metal Frags": 225,"HQM": 2,  "Springs": 1},
-    "rocket launcher":      {"Metal Frags": 25, "HQM": 2,  "Springs": 2},
-    "pump shotgun":         {"Metal Frags": 50, "Springs": 2},
-    "revolver":             {"Metal Frags": 63, "Springs": 1},
-    "sheet metal door":     {"Metal Frags": 75},
-    "armored door":         {"HQM": 13, "Metal Frags": 50},
-    "sheet metal wall":     {"Metal Frags": 100},
-    "armored wall":         {"HQM": 13, "Metal Frags": 50},
-    "gears":                {"Metal Frags": 25},
-    "pipe":                 {"Metal Frags": 13},
-    "springs":              {"Metal Frags": 13},
-    "tech trash":           {"HQM": 1, "Scrap": 13},
+    "assault rifle": {"Metal Frags": 25, "HQM": 1, "Springs": 2},
+    "bolt action rifle": {"Metal Frags": 13, "HQM": 2, "Springs": 2},
+    "semi-automatic rifle": {"Metal Frags": 225, "HQM": 2, "Springs": 1},
+    "rocket launcher": {"Metal Frags": 25, "HQM": 2, "Springs": 2},
+    "pump shotgun": {"Metal Frags": 50, "Springs": 2},
+    "revolver": {"Metal Frags": 63, "Springs": 1},
+    "sheet metal door": {"Metal Frags": 75},
+    "armored door": {"HQM": 13, "Metal Frags": 50},
+    "sheet metal wall": {"Metal Frags": 100},
+    "armored wall": {"HQM": 13, "Metal Frags": 50},
+    "gears": {"Metal Frags": 25},
+    "pipe": {"Metal Frags": 13},
+    "springs": {"Metal Frags": 13},
+    "tech trash": {"HQM": 1, "Scrap": 13},
 }
 
 _DECAY_DATA = {
@@ -820,36 +794,36 @@ _DECAY_DATA = {
 }
 
 _UPKEEP_DATA = {
-    "wood wall":          {"Wood": 7},
-    "wood foundation":    {"Wood": 7},
-    "stone wall":         {"Stone": 5},
-    "stone foundation":   {"Stone": 5},
-    "sheet metal wall":   {"Metal Frags": 3},
+    "wood wall": {"Wood": 7},
+    "wood foundation": {"Wood": 7},
+    "stone wall": {"Stone": 5},
+    "stone foundation": {"Stone": 5},
+    "sheet metal wall": {"Metal Frags": 3},
     "sheet metal foundation": {"Metal Frags": 3},
-    "armored wall":       {"HQM": 1},
+    "armored wall": {"HQM": 1},
     "armored foundation": {"HQM": 1},
 }
 
 _CCTV_DATA = {
-    "airfield":        ["AIRFIELDLOOKOUT1", "AIRFIELDLOOKOUT2", "AIRFIELDHANGAR1", "AIRFIELDHANGAR2", "AIRFIELDTARMAC"],
-    "bandit camp":     ["BANDITCAMP1", "BANDITCAMP2", "BANDITCAMP3"],
-    "dome":            ["DOME1", "DOME2"],
-    "gas station":     ["GASSTATION1"],
-    "harbour":         ["HARBOUR1", "HARBOUR2"],
-    "junkyard":        ["JUNKYARD1", "JUNKYARD2"],
-    "launch site":     ["LAUNCHSITE1", "LAUNCHSITE2", "LAUNCHSITE3", "LAUNCHSITE4", "ROCKETFACTORY1"],
-    "lighthouse":      ["LIGHTHOUSE1"],
-    "military tunnel": ["MILITARYTUNNEL1","MILITARYTUNNEL2","MILITARYTUNNEL3","MILITARYTUNNEL4","MILITARYTUNNEL5","MILITARYTUNNEL6"],
-    "oil rig":         ["OILRIG1","OILRIG1L1","OILRIG1L2","OILRIG1L3","OILRIG1L4","OILRIG1DOCK"],
-    "large oil rig":   ["OILRIG2","OILRIG2L1","OILRIG2L2","OILRIG2L3","OILRIG2L4","OILRIG2L5","OILRIG2L6","OILRIG2DOCK"],
-    "outpost":         ["OUTPOST1", "OUTPOST2", "OUTPOST3"],
-    "power plant":     ["POWERPLANT1", "POWERPLANT2", "POWERPLANT3", "POWERPLANT4"],
-    "satellite dish":  ["SATELLITEDISH1", "SATELLITEDISH2", "SATELLITEDISH3"],
-    "sewer branch":    ["SEWERBRANCH1", "SEWERBRANCH2"],
-    "supermarket":     ["SUPERMARKET1"],
-    "train yard":      ["TRAINYARD1", "TRAINYARD2", "TRAINYARD3"],
-    "water treatment": ["WATERTREATMENT1","WATERTREATMENT2","WATERTREATMENT3","WATERTREATMENT4","WATERTREATMENT5"],
-    "mining outpost":  ["MININGOUTPOST1"],
+    "airfield": ["AIRFIELDLOOKOUT1", "AIRFIELDLOOKOUT2", "AIRFIELDHANGAR1", "AIRFIELDHANGAR2", "AIRFIELDTARMAC"],
+    "bandit camp": ["BANDITCAMP1", "BANDITCAMP2", "BANDITCAMP3"],
+    "dome": ["DOME1", "DOME2"],
+    "gas station": ["GASSTATION1"],
+    "harbour": ["HARBOUR1", "HARBOUR2"],
+    "junkyard": ["JUNKYARD1", "JUNKYARD2"],
+    "launch site": ["LAUNCHSITE1", "LAUNCHSITE2", "LAUNCHSITE3", "LAUNCHSITE4", "ROCKETFACTORY1"],
+    "lighthouse": ["LIGHTHOUSE1"],
+    "military tunnel": ["MILITARYTUNNEL1", "MILITARYTUNNEL2", "MILITARYTUNNEL3", "MILITARYTUNNEL4", "MILITARYTUNNEL5", "MILITARYTUNNEL6"],
+    "oil rig": ["OILRIG1", "OILRIG1L1", "OILRIG1L2", "OILRIG1L3", "OILRIG1L4", "OILRIG1DOCK"],
+    "large oil rig": ["OILRIG2", "OILRIG2L1", "OILRIG2L2", "OILRIG2L3", "OILRIG2L4", "OILRIG2L5", "OILRIG2L6", "OILRIG2DOCK"],
+    "outpost": ["OUTPOST1", "OUTPOST2", "OUTPOST3"],
+    "power plant": ["POWERPLANT1", "POWERPLANT2", "POWERPLANT3", "POWERPLANT4"],
+    "satellite dish": ["SATELLITEDISH1", "SATELLITEDISH2", "SATELLITEDISH3"],
+    "sewer branch": ["SEWERBRANCH1", "SEWERBRANCH2"],
+    "supermarket": ["SUPERMARKET1"],
+    "train yard": ["TRAINYARD1", "TRAINYARD2", "TRAINYARD3"],
+    "water treatment": ["WATERTREATMENT1", "WATERTREATMENT2", "WATERTREATMENT3", "WATERTREATMENT4", "WATERTREATMENT5"],
+    "mining outpost": ["MININGOUTPOST1"],
     "fishing village": ["FISHINGVILLAGE1"],
 }
 
@@ -914,10 +888,10 @@ def _cmd_item(args: str) -> str:
     if not args:
         return "Usage: `!item <name>`"
     lines = []
-    _, craft    = _fuzzy_match(args, _CRAFT_DATA)
+    _, craft = _fuzzy_match(args, _CRAFT_DATA)
     _, research = _fuzzy_match(args, _RESEARCH_DATA)
-    _, recycle  = _fuzzy_match(args, _RECYCLE_DATA)
-    _, decay    = _fuzzy_match(args, _DECAY_DATA)
+    _, recycle = _fuzzy_match(args, _RECYCLE_DATA)
+    _, decay = _fuzzy_match(args, _DECAY_DATA)
     if not any([craft, research, recycle, decay]):
         return f"No data found for `{args}`."
     if craft:
@@ -945,25 +919,22 @@ def _cmd_cctv(args: str) -> str:
 def cmd_game_question(query: str) -> str:
     q = query.lower()
     qa = {
-        ("sulfur", "stone", "wall"):  "**Stone Wall:** Satchels: **10** | C4: **2** | Rockets: **4** (~1,500 sulfur)",
+        ("sulfur", "stone", "wall"): "**Stone Wall:** Satchels: **10** | C4: **2** | Rockets: **4** (~1,500 sulfur)",
         ("sulfur", "sheet", "metal"): "**Sheet Metal Wall:** Satchels: **4** | C4: **1** | Rockets: **2** (~1,000 sulfur)",
-        ("sulfur", "armored"):        "**Armored Wall:** C4: **4** | Rockets: **8** | Satchels: **12** (~4,000 sulfur)",
-        ("scrap", "farm"):            "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
-        ("best", "weapon", "early"):  "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
-        ("bradley", "apc"):           "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
-        ("cargo", "ship"):            "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists — bring armor",
-        ("radiation",):               "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
+        ("sulfur", "armored"): "**Armored Wall:** C4: **4** | Rockets: **8** | Satchels: **12** (~4,000 sulfur)",
+        ("scrap", "farm"): "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
+        ("best", "weapon", "early"): "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
+        ("bradley", "apc"): "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
+        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists — bring armor",
+        ("radiation",): "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
     }
     for keywords, answer in qa.items():
         if all(kw in q for kw in keywords):
             return answer
-    return (
-        f"No answer for: *\"{query}\"*\n\n"
-        "Try: `help`"
-    )
+    return f"No answer for: *\"{query}\"*\n\nTry: `help`"
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helper Functions ──────────────────────────────────────────────────────────
 def _fmt_time(t) -> str:
     if isinstance(t, str):
         try:
@@ -973,7 +944,8 @@ def _fmt_time(t) -> str:
         except Exception:
             return t
     try:
-        h = int(float(t)); m = int((float(t) - h) * 60)
+        h = int(float(t))
+        m = int((float(t) - h) * 60)
         return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
     except Exception:
         return str(t)
@@ -989,12 +961,18 @@ def _fmt_ts(ts: int) -> str:
 
 
 def _fmt_elapsed(seconds: int) -> str:
-    if seconds < 60:    return f"{seconds}s"
-    if seconds < 3600:  return f"{seconds // 60}m {seconds % 60}s"
-    h = seconds // 3600; m = (seconds % 3600) // 60
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
     return f"{h}h {m}m"
 
 
 def _time_till(now: float, target: float) -> str:
     diff = (target - now) % 24
     real_minutes = int(diff * 2.5)
+    if real_minutes < 60:
+        return f"~{real_minutes}m"
+    return f"~{real_minutes // 60}h {real_minutes % 60}m"
