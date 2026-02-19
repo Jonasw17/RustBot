@@ -61,7 +61,6 @@ except Exception as e:
 _voice_monitor_tasks: dict = {}
 
 # -- Connection Health Tracking -------------------------------
-# -- Connection Health Tracking -------------------------------
 _connection_health = {
     "last_successful_command": {},  # discord_id -> timestamp
     "reconnect_attempts": {},        # discord_id -> count
