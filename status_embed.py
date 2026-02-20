@@ -14,15 +14,34 @@ log = logging.getLogger("StatusEmbed")
 
 
 def _parse_time_to_float(t) -> float:
-    """Convert time from string ('19:21') or float (19.35) to float."""
+    """
+    Safely parse time value from Rust+ API that could be:
+    - A float (19.35)
+    - A string with colon ("19:21")
+    - A string number ("19.35")
+
+    Returns float or 0.0 on error.
+    """
     try:
-        if isinstance(t, str) and ":" in t:
-            parts = t.split(":")
-            h = int(parts[0])
-            m = int(parts[1]) if len(parts) > 1 else 0
-            return h + (m / 60.0)
+        # If it's already a number type
+        if isinstance(t, (int, float)):
+            return float(t)
+
+        # If it's a string
+        if isinstance(t, str):
+            # Handle "HH:MM" format
+            if ":" in t:
+                parts = t.split(":")
+                h = int(parts[0])
+                m = int(parts[1]) if len(parts) > 1 else 0
+                return h + (m / 60.0)
+            # Handle string number "19.35"
+            else:
+                return float(t)
+
+        # Fallback: try to convert to float
         return float(t)
-    except Exception:
+    except (ValueError, TypeError, AttributeError):
         return 0.0
 
 

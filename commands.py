@@ -747,9 +747,9 @@ async def _cmd_time(socket, name: str) -> str:
     t = await socket.get_time()
     if isinstance(t, RustError):
         return f"Error: {t.reason}"
-    now_f = float(t.time)
-    sunrise = float(t.sunrise)
-    sunset = float(t.sunset)
+    now_f = _parse_time_to_float(t.time)
+    sunrise = _parse_time_to_float(t.sunrise)
+    sunset = _parse_time_to_float(t.sunset)
     is_day = sunrise <= now_f < sunset
     till_change = _time_till(now_f, sunset if is_day else sunrise)
     phase = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
