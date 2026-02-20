@@ -135,9 +135,9 @@ async def cmd_timer(args: str) -> str:
             return (
                 "Usage: `!timer add <duration> [text]`\n"
                 "Examples:\n"
-                "• `!timer add 15m Furnace check`\n"
-                "• `!timer add 2h30m Raid defense`\n"
-                "• `!timer add 1h Base upkeep`"
+                "* `!timer add 15m Furnace check`\n"
+                "* `!timer add 2h30m Raid defense`\n"
+                "* `!timer add 1h Base upkeep`"
             )
 
         rest = parts[1].split(None, 1)
@@ -735,7 +735,7 @@ async def _cmd_wipe(socket, name: str) -> str:
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
     elapsed = _fmt_elapsed(int(_time_module.time()) - info.wipe_time) if info.wipe_time else "Unknown"
-    return f"**{name}** â€” Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
+    return f"**{name}** ” Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
 
 
 def _cmd_uptime(name: str) -> str:
@@ -754,7 +754,7 @@ async def _cmd_time(socket, name: str) -> str:
     till_change = _time_till(now_f, sunset if is_day else sunrise)
     phase = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
     return (
-        f"**{name} â€” In-Game Time**\n"
+        f"**{name} ” In-Game Time**\n"
         f"> **Now:** {_fmt_time(t.time)}\n"
         f"> **Sunrise:** {_fmt_time(t.sunrise)}  |  **Sunset:** {_fmt_time(t.sunset)}\n"
         f"> {phase}"
@@ -787,7 +787,7 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         )
         return (caption, img_bytes)
     except Exception as e:
-        log.warning(f"Map image fetch failed: {e} â€” falling back to text")
+        log.warning(f"Map image fetch failed: {e} ” falling back to text")
         return (
             f"**{name}**\n"
             f"> **Map:** {info.map}  |  **Seed:** `{info.seed}`  |  **Size:** {info.size}\n"
@@ -805,8 +805,8 @@ async def _cmd_team(socket) -> str:
     lines = []
     for m in team.members:
         status = "Online" if m.is_online else "Offline"
-        alive = "" if m.is_alive else " â€” Dead"
-        lines.append(f"> **{m.name}** â€” {status}{alive}")
+        alive = "" if m.is_alive else " ” Dead"
+        lines.append(f"> **{m.name}** ” {status}{alive}")
     return f"**Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
 
@@ -840,7 +840,7 @@ async def _cmd_afk(socket) -> str:
     return (
             "**Online Team Members**\n"
             + "\n".join(f"> **{m.name}**" for m in online)
-            + "\n_AFK detection requires position history â€” not available via Rust+ API._"
+            + "\n_AFK detection requires position history ” not available via Rust+ API._"
     )
 
 
@@ -852,18 +852,18 @@ async def _cmd_alive(socket, args: str) -> str:
         match = next((m for m in team.members if args.lower() in m.name.lower()), None)
         if not match:
             return f"No team member found matching `{args}`."
-        return f"**{match.name}** â€” {'Alive' if match.is_alive else 'Dead'}"
+        return f"**{match.name}** ” {'Alive' if match.is_alive else 'Dead'}"
     alive = [m for m in team.members if m.is_alive]
     dead = [m for m in team.members if not m.is_alive]
-    lines = [f"> **{m.name}** â€” Alive" for m in alive] + \
-            [f"> **{m.name}** â€” Dead" for m in dead]
+    lines = [f"> **{m.name}** ” Alive" for m in alive] + \
+            [f"> **{m.name}** ” Dead" for m in dead]
     return f"**Team Status ({len(alive)}/{len(team.members)} alive)**\n" + "\n".join(lines)
 
 
 async def _cmd_leader(socket, args: str) -> str:
     """
-    !leader           â€” promote self
-    !leader <name>    â€” promote teammate by name
+    !leader           ” promote self
+    !leader <name>    ” promote teammate by name
     """
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -903,7 +903,7 @@ async def _cmd_events(socket, name: str) -> str:
             active_types.add(m.type)
 
     if not active_types:
-        return f"**{name}** â€” No active events right now."
+        return f"**{name}** ” No active events right now."
 
     now = _time_module.time()
     for type_id in active_types:
@@ -918,9 +918,9 @@ async def _cmd_events(socket, name: str) -> str:
     for type_id in sorted(active_types):
         elapsed_s = int(now - _event_first_seen[type_id])
         age = f"{elapsed_s}s" if elapsed_s < 60 else f"{elapsed_s // 60}m {elapsed_s % 60}s"
-        lines.append(f"> **{EVENT_TYPES[type_id]}** â€” active for {age}")
+        lines.append(f"> **{EVENT_TYPES[type_id]}** ” active for {age}")
 
-    return f"**{name} â€” Active Events**\n" + "\n".join(lines)
+    return f"**{name} ” Active Events**\n" + "\n".join(lines)
 
 
 async def _cmd_heli(socket, name: str) -> str:
@@ -929,9 +929,9 @@ async def _cmd_heli(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     helis = list({m.type: m for m in markers if m.type == 3}.values())
     if not helis:
-        return f"**{name}** â€” No Patrol Helicopter on the map right now."
+        return f"**{name}** ” No Patrol Helicopter on the map right now."
     h = helis[0]
-    return f"**{name} â€” Patrol Helicopter**\n> On the map â€” Position: `{int(h.x)}, {int(h.y)}`"
+    return f"**{name} ” Patrol Helicopter**\n> On the map ” Position: `{int(h.x)}, {int(h.y)}`"
 
 
 async def _cmd_cargo(socket, name: str) -> str:
@@ -940,9 +940,9 @@ async def _cmd_cargo(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ships = list({m.type: m for m in markers if m.type == 4}.values())
     if not ships:
-        return f"**{name}** â€” No Cargo Ship on the map right now."
+        return f"**{name}** ” No Cargo Ship on the map right now."
     s = ships[0]
-    return f"**{name} â€” Cargo Ship**\n> On the map â€” Position: `{int(s.x)}, {int(s.y)}`"
+    return f"**{name} ” Cargo Ship**\n> On the map ” Position: `{int(s.x)}, {int(s.y)}`"
 
 
 async def _cmd_chinook(socket, name: str) -> str:
@@ -951,9 +951,9 @@ async def _cmd_chinook(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ch47s = list({m.type: m for m in markers if m.type == 7}.values())
     if not ch47s:
-        return f"**{name}** â€” No Chinook CH-47 on the map right now."
+        return f"**{name}** ” No Chinook CH-47 on the map right now."
     c = ch47s[0]
-    return f"**{name} â€” Chinook CH-47**\n> On the map â€” Position: `{int(c.x)}, {int(c.y)}`"
+    return f"**{name} ” Chinook CH-47**\n> On the map ” Position: `{int(c.x)}, {int(c.y)}`"
 
 
 async def _cmd_large(socket, name: str) -> str:
@@ -971,10 +971,10 @@ async def _cmd_large(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} â€” Large Oil Rig**\n"
+                f"**{name} ” Large Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} â€” Large Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} ” Large Oil Rig**\n> No locked crate active on the map right now."
 
     if 60 not in _event_first_seen:
         _event_first_seen[60] = now
@@ -985,13 +985,13 @@ async def _cmd_large(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} â€” Large Oil Rig**\n"
-            f"> Locked Crate active â€” unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx â€” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} ” Large Oil Rig**\n"
+            f"> Locked Crate active ” unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx ” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     else:
         return (
-            f"**{name} â€” Large Oil Rig**\n"
+            f"**{name} ” Large Oil Rig**\n"
             f"> Locked Crate should be **unlocked** (crate active for {_fmt_elapsed(elapsed)})"
         )
 
@@ -1011,10 +1011,10 @@ async def _cmd_small(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} â€” Small Oil Rig**\n"
+                f"**{name} ” Small Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} â€” Small Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} ” Small Oil Rig**\n> No locked crate active on the map right now."
 
     if 61 not in _event_first_seen:
         _event_first_seen[61] = now
@@ -1025,12 +1025,12 @@ async def _cmd_small(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} â€” Small Oil Rig**\n"
-            f"> Locked Crate active â€” unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx â€” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} ” Small Oil Rig**\n"
+            f"> Locked Crate active ” unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx ” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     return (
-        f"**{name} â€” Small Oil Rig**\n"
+        f"**{name} ” Small Oil Rig**\n"
         f"> Locked Crate should be **unlocked** (active for {_fmt_elapsed(elapsed)})"
     )
 
@@ -1122,7 +1122,7 @@ def _cmd_cctv(args: str) -> str:
     k, codes = _fuzzy_match(args, CCTV_DATA)
     if not codes:
         return f"No CCTV codes for `{args}`."
-    return f"**CCTV â€” {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
+    return f"**CCTV ” {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
 
 
 #  Game Q&A (fallback)
@@ -1135,7 +1135,7 @@ def cmd_game_question(query: str) -> str:
         ("scrap", "farm"): "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
         ("best", "weapon", "early"): "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
         ("bradley", "apc"): "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
-        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists â€” bring armor",
+        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists ” bring armor",
         ("radiation",): "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
     }
     for keywords, answer in qa.items():
