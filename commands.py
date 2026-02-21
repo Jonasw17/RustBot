@@ -222,7 +222,7 @@ async def cmd_smart_switch(
         if isinstance(result, RustError):
             return f"Error toggling switch: {result.reason}"
 
-        return f"Smart switch **{switch_name}** turned **{action_text}** [OK]"
+        return f"Smart switch **{switch_name}** turned **{action_text}** ✓"
 
     except Exception as e:
         log.error(f"Error toggling smart switch: {e}")
@@ -276,6 +276,8 @@ async def handle_query(
         return await cmd_clear(args, ctx)
     if cmd == "change":
         return await cmd_change_server(args, manager, user_manager, discord_id)
+    if cmd in ("removeserver", "delserver", "rmserver"):
+        return await cmd_remove_server(args, manager, user_manager, discord_id)
     if cmd == "help":
         return cmd_help()
     if cmd in ("timer", "timers"):
@@ -404,11 +406,48 @@ async def cmd_change_server(
         return f"Could not connect: `{e}`"
 
 
+async def cmd_remove_server(
+        identifier: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """Remove a server from user's paired servers"""
+    if not identifier:
+        return (
+            "Usage: `!removeserver <server name or number>`\n"
+            "Example: `!removeserver 2` or `!removeserver Rustoria`"
+        )
+
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+
+    success, message = user_manager.remove_user_server(discord_id, identifier)
+
+    if success:
+        # If removed server was active, clear the connection
+        active = manager.get_active_server_for_user(discord_id)
+        if active and identifier in active.get("name", ""):
+            # Disconnect from removed server
+            if discord_id in manager._active_sockets:
+                try:
+                    await manager._active_sockets[discord_id].disconnect()
+                except Exception:
+                    pass
+                del manager._active_sockets[discord_id]
+            if discord_id in manager._active_servers:
+                del manager._active_servers[discord_id]
+
+            message += "\n\nServer was active - disconnected. Use `!servers` to connect to another."
+
+    return message
+
+
 def cmd_help() -> str:
     return (
         "**Rust+ Companion Bot** - prefix: `!`\n\n"
         "**Server Management:**\n"
-        "`servers` - `switch <n or #>` - `register` - `whoami`\n\n"
+        "`servers` - `switch <n or #>` - `removeserver <n or #>` - `register` - `whoami`\n\n"
         "**Server Info:**\n"
         "`status` - `players` - `pop` - `time` - `map` - `wipe` - `uptime`\n\n"
         "**Team:**\n"

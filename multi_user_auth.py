@@ -140,6 +140,51 @@ class UserManager:
             return []
         return list(user.get("paired_servers", {}).values())
 
+    def remove_user_server(self, discord_id: str, identifier: str) -> tuple[bool, str]:
+        """
+        Remove a server from user's paired servers by name or index.
+
+        Args:
+            discord_id: Discord user ID
+            identifier: Server name substring or 1-based index
+
+        Returns:
+            (success, message)
+        """
+        user = self.get_user(discord_id)
+        if not user:
+            return False, "User not registered"
+
+        servers = user.get("paired_servers", {})
+        if not servers:
+            return False, "No servers paired"
+
+        # Convert to list for indexing
+        server_list = list(servers.items())
+
+        # Try numeric index first
+        if identifier.isdigit():
+            idx = int(identifier) - 1
+            if 0 <= idx < len(server_list):
+                key, server = server_list[idx]
+                del servers[key]
+                self._save()
+                log.info(f"Removed server {server['name']} for user {user['discord_name']}")
+                return True, f"Removed server **{server['name']}**"
+            else:
+                return False, f"Invalid index. Use 1-{len(server_list)}"
+
+        # Try name match
+        identifier_lower = identifier.lower()
+        for key, server in server_list:
+            if identifier_lower in server.get("name", "").lower():
+                del servers[key]
+                self._save()
+                log.info(f"Removed server {server['name']} for user {user['discord_name']}")
+                return True, f"Removed server **{server['name']}**"
+
+        return False, f"No server found matching `{identifier}`"
+
     def remove_user(self, discord_id: str) -> bool:
         """Remove a user's credentials"""
         if str(discord_id) in self._users:
@@ -207,7 +252,7 @@ async def cmd_register(message, user_manager: UserManager) -> str:
 
         if success:
             return (
-                f"[OK] **Registration successful!**\n\n"
+                f"✅ **Registration successful!**\n\n"
                 f"Your account is now linked:\n"
                 f"> Steam ID: `{steam_id}`\n"
                 f"> Discord: {message.author.mention}\n\n"
