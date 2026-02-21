@@ -222,7 +222,7 @@ async def cmd_smart_switch(
         if isinstance(result, RustError):
             return f"Error toggling switch: {result.reason}"
 
-        return f"Smart switch **{switch_name}** turned **{action_text}** ✓"
+        return f"Smart switch **{switch_name}** turned **{action_text}** [OK]"
 
     except Exception as e:
         log.error(f"Error toggling smart switch: {e}")
@@ -1181,8 +1181,28 @@ def _fmt_elapsed(seconds: int) -> str:
 
 
 def _time_till(now: float, target: float) -> str:
+    """
+    Calculate real-world time until target in-game time.
+
+    Rust time mechanics:
+    - 24-hour in-game cycle = 60 real minutes
+    - 1 in-game hour = 2.5 real minutes
+    - Day: ~45 minutes (sunrise to sunset)
+    - Night: ~15 minutes (sunset to sunrise)
+    """
+    # Calculate in-game hours until target
     diff = (target - now) % 24
-    real_minutes = int(diff * 2.5)
-    if real_minutes < 60:
-        return f"~{real_minutes}m"
-    return f"~{real_minutes // 60}h {real_minutes % 60}m"
+
+    # Convert to real-world minutes: 1 in-game hour = 2.5 real minutes
+    real_minutes = diff * 2.5
+
+    # Format output
+    if real_minutes < 1:
+        seconds = int(real_minutes * 60)
+        return f"{seconds}s"
+    elif real_minutes < 60:
+        return f"{int(real_minutes)}m"
+    else:
+        hours = int(real_minutes // 60)
+        mins = int(real_minutes % 60)
+        return f"{hours}h {mins}m"

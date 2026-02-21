@@ -20,7 +20,7 @@ load_dotenv()
 log = logging.getLogger("RustClient")
 
 
-# -- Data Classes -------------------------------
+# ── Data Classes ──────────────────────────────────────────────────────────────
 @dataclass
 class ServerInfo:
     name: str
@@ -62,7 +62,7 @@ class TeamMember:
     y: float
 
 
-# -- Main Client -------------------------------
+# ── Main Client ───────────────────────────────────────────────────────────────
 class RustClient:
     """
     Manages the persistent WebSocket connection to your Rust+ server.
@@ -80,7 +80,7 @@ class RustClient:
         self._connected = False
         self._chat_callbacks: list = []
 
-    # -- Connection -------------------------------
+    # ── Connection ────────────────────────────────────────────────────────────
     async def connect(self):
         """Connect to the Rust+ WebSocket. Raises on failure."""
         if not all([self._ip, self._steam, self._token]):
@@ -101,7 +101,7 @@ class RustClient:
 
         await self._socket.connect()
         self._connected = True
-        log.info("Rust+ connected ✅")
+        log.info("Rust+ connected [OK]")
 
         # Register chat callback for relay
         @self._socket.on_team_message
@@ -120,7 +120,7 @@ class RustClient:
             await self._socket.disconnect()
             self._connected = False
 
-    # -- API Methods -------------------------------
+    # ── API Methods ───────────────────────────────────────────────────────────
     async def get_info(self) -> ServerInfo:
         """Fetch server info (name, players, map, seed, wipe time)."""
         info: RustInfo = await self._socket.get_info()
@@ -164,11 +164,11 @@ class RustClient:
         markers: list[RustMarker] = await self._socket.get_markers()
 
         event_map = {
-            1: "💥 Explosion",
-            3: "🚁 Patrol Helicopter",
-            4: "🚢 Cargo Ship",
-            6: "📦 Locked Crate (Chinook drop)",
-            7: "🪂 Chinook CH-47",
+            1: "[Explosion] Explosion",
+            3: "[Heli] Patrol Helicopter",
+            4: "[Ship] Cargo Ship",
+            6: "[Crate] Locked Crate (Chinook drop)",
+            7: "[Chinook] Chinook CH-47",
         }
         # Type 2 = Vending Machine, Type 5 = Player base — skip those
         events = [
@@ -182,13 +182,13 @@ class RustClient:
         """Fetch recent team chat messages."""
         return await self._socket.get_team_chat()
 
-    # -- Chat Relay -------------------------------
+    # ── Chat Relay ────────────────────────────────────────────────────────────
     def on_chat_message(self, callback):
         """Register an async callback for incoming team chat messages."""
         self._chat_callbacks.append(callback)
 
 
-# -- Helpers -------------------------------
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _fmt_rust_time(t: float) -> str:
     """Convert a Rust float time (e.g. 14.5) to 12-hour format (2:30 PM)."""
     hour = int(t)

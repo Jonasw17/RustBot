@@ -2,6 +2,11 @@
 status_embed.py
 ────────────────────────────────────────────────────────────────────────────
 Server status embed builder - shared between bot.py and commands.py
+
+FIXED VERSION:
+- Removed all emoji characters (prevents encoding errors)
+- Clarified time calculation logic
+- Added proper comments
 """
 
 import asyncio
@@ -60,10 +65,42 @@ def _fmt_time_val(t) -> str:
         return str(t)
 
 
+def _calculate_time_until_change(now_ig: float, sunrise: float, sunset: float) -> tuple[str, str]:
+    """
+    Calculate time until next day/night phase change.
+
+    Rust time mechanics:
+    - 24-hour in-game cycle = 60 real minutes
+    - 1 in-game hour = 2.5 real minutes
+
+    Args:
+        now_ig: Current in-game time (0-24)
+        sunrise: Sunrise time (e.g., 6.5 for 6:30 AM)
+        sunset: Sunset time (e.g., 18.5 for 6:30 PM)
+
+    Returns:
+        (phase_indicator, time_message)
+        Example: ("[Day]", "Night in 15m")
+    """
+    is_day = sunrise <= now_ig < sunset
+
+    if is_day:
+        # Currently day - calculate hours until sunset
+        diff_h = (sunset - now_ig) % 24
+        real_mins = int(diff_h * 2.5)
+        return "[Day]", f"Night in {real_mins}m"
+    else:
+        # Currently night - calculate hours until sunrise
+        # The modulo handles wrapping: (6.5 - 23.0) % 24 = 7.5
+        diff_h = (sunrise - now_ig) % 24
+        real_mins = int(diff_h * 2.5)
+        return "[Night]", f"Day in {real_mins}m"
+
+
 def _build_minimal_embed(server: dict, status: str) -> discord.Embed:
     """Build a minimal embed when full info is unavailable"""
     embed = discord.Embed(
-        title=f"🟡 {server.get('name', server['ip'])}",
+        title=f"[!] {server.get('name', server['ip'])}",
         description=status,
         color=0xFFA500,
         timestamp=discord.utils.utcnow()
@@ -99,25 +136,17 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
         sunset = _parse_time_to_float(time_obj.sunset)
         sunrise = _parse_time_to_float(time_obj.sunrise)
 
-        is_day = sunrise <= now_ig < sunset
-        if is_day:
-            diff_h = (sunset - now_ig) % 24
-            next_change = f"Night in ~{int(diff_h * 2.5)}m"
-            phase_emoji = "☀️"
-        else:
-            diff_h = (sunrise - now_ig) % 24
-            next_change = f"Day in ~{int(diff_h * 2.5)}m"
-            phase_emoji = "🌙"
+        phase_indicator, next_change = _calculate_time_until_change(now_ig, sunrise, sunset)
 
         # Build embed
         embed = discord.Embed(
-            title=f"🟢 {server.get('name', server['ip'])}",
+            title=f"[ONLINE] {server.get('name', server['ip'])}",
             color=0xCE422B,
             timestamp=discord.utils.utcnow()
         )
 
         embed.add_field(name="Players", value=players, inline=True)
-        embed.add_field(name="Time", value=f"{phase_emoji} {_fmt_time_val(time_obj.time)}", inline=True)
+        embed.add_field(name="Time", value=f"{phase_indicator} {_fmt_time_val(time_obj.time)}", inline=True)
         embed.add_field(name="Next Phase", value=next_change, inline=True)
 
         embed.add_field(name="Since Wipe", value=f"{wipe_days:.1f} days", inline=True)
@@ -132,7 +161,7 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
 
         # Add user info if provided
         if user_info:
-            embed.set_footer(text=f"Connected by {user_info.get('discord_name', 'User')} • Updates every 45s")
+            embed.set_footer(text=f"Connected by {user_info.get('discord_name', 'User')} | Updates every 45s")
         else:
             embed.set_footer(text="Updates every 45s")
 
@@ -140,7 +169,7 @@ async def build_server_status_embed(server: dict, socket, user_info: dict = None
 
     except asyncio.TimeoutError:
         log.warning(f"Server status timeout for {server.get('name', server['ip'])}")
-        return _build_minimal_embed(server, "⚠️ Connection timeout")
+        return _build_minimal_embed(server, "[!] Connection timeout")
     except Exception as e:
         log.error(f"Error building status embed: {e}")
-        return _build_minimal_embed(server, f"⚠️ Error: {str(e)[:50]}")
+        return _build_minimal_embed(server, f"[!] Error: {str(e)[:50]}")

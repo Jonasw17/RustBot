@@ -258,7 +258,7 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
             if attempt < max_retries - 1:
                 log.warning(f"Command timed out (attempt {attempt + 1}), retrying...")
             else:
-                return "⚠️ Command timed out. The server may be slow to respond."
+                return "[!] Command timed out. The server may be slow to respond."
 
         except Exception as e:
             if attempt < max_retries - 1:
@@ -271,12 +271,12 @@ async def execute_command_with_retry(discord_id: str, query: str, ctx, max_retri
             else:
                 log.error(f"Command failed after {max_retries} attempts: {e}")
                 return (
-                    f"⚠️ **Command failed**: Connection issue.\n"
+                    f"[!] **Command failed**: Connection issue.\n"
                     f"> Try `!servers` to verify connection status.\n"
                     f"> Error: `{str(e)[:100]}`"
                 )
 
-    return "⚠️ Command execution failed after multiple attempts."
+    return "[!] Command execution failed after multiple attempts."
 
 
 # -- Notification helper -------------------------------
@@ -387,7 +387,7 @@ async def on_ready():
 def _log_channel_config():
     def _ch(cid):
         if not cid:
-            return "❌ not set"
+            return "[X] not set"
         ch = bot.get_channel(cid)
         return f" #{ch.name}" if ch else f" ID {cid} not found"
 
@@ -444,7 +444,7 @@ async def _on_rust_chat_message(event):
 
     try:
         embed = discord.Embed(
-            title=f"💬 {msg.name}",
+            title=f"[Chat] {msg.name}",
             description=msg.message,
             color=0xCE422B
         )
@@ -522,16 +522,16 @@ async def on_message(message: discord.Message):
             active = manager.get_active_server_for_user(discord_id)
 
             if active:
-                server_info = f"✅ Connected to **{active['name']}**"
+                server_info = f"[OK] Connected to **{active['name']}**"
             elif servers:
-                server_info = f"⚠️ **{len(servers)}** paired server(s) - not connected"
+                server_info = f"[!] **{len(servers)}** paired server(s) - not connected"
             else:
-                server_info = "❌ No servers paired"
+                server_info = "[X] No servers paired"
 
-            status_emoji = "✅" if active else "⚠️" if servers else "❌"
+            status_emoji = "[OK]" if active else "[!]" if servers else "[X]"
         else:
-            server_info = "❌ Not registered"
-            status_emoji = "❌"
+            server_info = "[X] Not registered"
+            status_emoji = "[X]"
 
         await message.reply(
             f"**Rust+ Companion Bot - Multi-User Mode**\n"
@@ -553,7 +553,7 @@ async def on_message(message: discord.Message):
                 return
         except Exception as e:
             log.error(f"Command error: {e}", exc_info=True)
-            response = f"⚠️ Error: `{e}`"
+            response = f"[!] Error: `{e}`"
 
     # Handle different response types
     if isinstance(response, tuple):

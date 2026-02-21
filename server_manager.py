@@ -167,7 +167,7 @@ class ServerManager:
                     except Exception as exc:
                         log.error(f"Chat callback error: {exc}")
 
-            log.info("ChatEvent listener registered ✅")
+            log.info("ChatEvent listener registered [OK]")
 
         self._data["active"] = key
         self._save()
@@ -245,7 +245,7 @@ class ServerManager:
                         log.warning(f"Incomplete pairing data received: {body}")
                         return
 
-                    log.info(f"📲 Pairing notification: {name} ({ip}:{port})")
+                    log.info(f"[Pairing] Pairing notification: {name} ({ip}:{port})")
 
                     # Save server to registry
                     server = self.add_server(ip, port, name, steam_id, player_token)

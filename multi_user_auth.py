@@ -1,10 +1,18 @@
 """
+multi_user_auth.py
+────────────────────────────────────────────────────────────────────────────
 Allows multiple Discord users to pair their own Rust+ accounts with the bot.
 
-FIXES:
-- Handles wrapped FCM config format: {"fcm_credentials": {"gcm": ..., "fcm": ...}}
-- Users provide Steam ID manually (config doesn't contain it reliably)
-- Backward compatible with old config format
+How it works:
+1. Each user runs their own FCM registration (pair.bat)
+2. They provide their credentials to the bot via DM
+3. Bot stores multiple user credentials and can switch between them
+4. When someone uses a command, bot uses THEIR credentials (not just the host's)
+
+This means:
+- @Rust role members can all use the bot
+- Each person sees their own team data
+- Bot can monitor servers none of the original host is on
 """
 
 import json
@@ -147,46 +155,20 @@ class UserManager:
 
 async def cmd_register(message, user_manager: UserManager) -> str:
     """
-    !register <steam_id>
+    !register
 
-    FIXED to handle wrapped FCM config format and manual Steam ID entry.
+    DM the bot with this command along with your rustplus.config.json file.
+    Bot will parse it and register your account.
+
+    Args:
+        message: The discord.Message object (NOT a Context)
+        user_manager: UserManager instance
     """
+    # This should only work in DMs
     if not isinstance(message.channel, discord.DMChannel):
         return (
             "Please use this command in a **DM with the bot** for security.\n"
-            "Send `!register <your_steam_id>` along with your `rustplus.config.json` file.\n\n"
-            "**Find your Steam ID:**\n"
-            "• Go to https://steamid.io\n"
-            "• Enter your Steam profile URL\n"
-            "• Copy your steamID64 (starts with 765...)"
-        )
-
-    # Parse Steam ID from command
-    parts = message.content.split()
-    if len(parts) < 2:
-        return (
-            "**Usage:** `!register <steam_id>`\n\n"
-            "**Example:** `!register 76561198012345678`\n\n"
-            "**Find your Steam ID:**\n"
-            "1. Go to https://steamid.io\n"
-            "2. Enter your Steam profile URL\n"
-            "3. Copy your steamID64 (starts with 765...)\n\n"
-            "Then attach your `rustplus.config.json` file with the command."
-        )
-
-    try:
-        steam_id = int(parts[1])
-        # Validate Steam64 ID format
-        if steam_id < 76500000000000000 or steam_id > 76600000000000000:
-            return (
-                "That doesn't look like a valid Steam ID.\n"
-                "Steam IDs start with 765... and are 17 digits long.\n\n"
-                "Find yours at: https://steamid.io"
-            )
-    except ValueError:
-        return (
-            "Invalid Steam ID format. Must be a number like `76561198012345678`\n"
-            "Find yours at: https://steamid.io"
+            "Send `!register` along with your `rustplus.config.json` file attachment."
         )
 
     # Check for attachment
@@ -194,10 +176,10 @@ async def cmd_register(message, user_manager: UserManager) -> str:
         return (
             "Please attach your `rustplus.config.json` file.\n\n"
             "**How to get this file:**\n"
-            "1. Run FCM registration (use pair.bat)\n"
+            "1. Run FCM registration (use pair_windows.bat)\n"
             "2. Sign in with Steam when prompted\n"
             "3. File will be created on your Desktop\n"
-            "4. Send that file to me here in DM with `!register <steam_id>`"
+            "4. Send that file to me here in DM with `!register`"
         )
 
     attachment = message.attachments[0]
@@ -207,48 +189,25 @@ async def cmd_register(message, user_manager: UserManager) -> str:
     try:
         # Download and parse the FCM config
         file_bytes = await attachment.read()
-        config = json.loads(file_bytes.decode('utf-8'))
+        fcm_creds = json.loads(file_bytes.decode('utf-8'))
 
-        # Handle BOTH config formats
-        if "fcm_credentials" in config:
-            # New format: {"fcm_credentials": {"gcm": ..., "fcm": ...}}
-            fcm_creds = config["fcm_credentials"]
-        elif "gcm" in config and "fcm" in config:
-            # Old format: {"gcm": ..., "fcm": ..., ...}
-            fcm_creds = config
-        else:
-            return (
-                "Invalid config file structure.\n\n"
-                "Expected structure:\n"
-                "```json\n"
-                "{\n"
-                '  "fcm_credentials": {\n'
-                '    "gcm": {...},\n'
-                '    "fcm": {...}\n'
-                "  }\n"
-                "}\n"
-                "```\n\n"
-                "Make sure you uploaded the correct `rustplus.config.json` file."
-            )
+        # Extract Steam ID from FCM credentials
+        # The FCM config contains the Steam ID in its structure
+        steam_id = fcm_creds.get("fcm", {}).get("steamId")
+        if not steam_id:
+            return "Could not find Steam ID in the config file. Make sure you uploaded the correct rustplus.config.json"
 
-        # Validate that fcm_creds has the required fields
-        if "gcm" not in fcm_creds or "fcm" not in fcm_creds:
-            return (
-                "Config file is missing required FCM credentials.\n"
-                "Make sure you uploaded `rustplus.config.json` from pair.bat"
-            )
-
-        # Register the user with provided Steam ID
+        # Register the user
         success = user_manager.add_user(
             str(message.author.id),
             str(message.author),
-            steam_id,
-            fcm_creds  # Store just the credentials part
+            int(steam_id),
+            fcm_creds
         )
 
         if success:
             return (
-                f"✅ **Registration successful!**\n\n"
+                f"[OK] **Registration successful!**\n\n"
                 f"Your account is now linked:\n"
                 f"> Steam ID: `{steam_id}`\n"
                 f"> Discord: {message.author.mention}\n\n"
@@ -274,8 +233,7 @@ async def cmd_whoami(message, user_manager: UserManager) -> str:
     if not user:
         return (
             "You're not registered yet.\n"
-            "DM the bot with `!register <steam_id>` and your FCM config file to get started.\n\n"
-            "Find your Steam ID at: https://steamid.io"
+            "DM the bot with `!register` and your FCM config file to get started."
         )
 
     server_count = len(user.get("paired_servers", {}))
@@ -293,7 +251,6 @@ async def cmd_users(message, user_manager: UserManager) -> str:
     admin_role = discord.utils.get(message.guild.roles, name="Admin")
     if admin_role not in message.author.roles:
         return "You don't have permission to use this command."
-
     users = user_manager.list_users()
     if not users:
         return "No users registered yet."
