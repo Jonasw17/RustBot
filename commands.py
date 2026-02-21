@@ -13,6 +13,8 @@ from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_t
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
 from timers import timer_manager
+from storage_monitor import storage_manager, format_storage_embed
+from death_tracker import death_tracker, format_death_embed, format_death_history_embed
 from rust_info_db import (
     get_all_vehicle_costs,
     get_all_car_module_costs,
@@ -298,6 +300,22 @@ async def handle_query(
     if cmd == "switches":
         return cmd_list_switches(manager, user_manager, discord_id)
 
+    # Storage Monitor commands
+    if cmd in ("addsm", "addstoragem", "addstorage"):
+        return await cmd_add_storage(args, manager, user_manager, discord_id)
+    if cmd in ("viewsm", "viewstorage", "storage"):
+        return await cmd_view_storage(args, manager, user_manager, discord_id)
+    if cmd in ("deletesm", "removesm", "delstorage"):
+        return await cmd_remove_storage(args, manager, user_manager, discord_id)
+    if cmd in ("storages", "listsm"):
+        return cmd_list_storages(manager, user_manager, discord_id)
+
+    # Death tracker commands
+    if cmd in ("deaths", "deathhistory"):
+        return await cmd_death_history(manager, user_manager, discord_id)
+    if cmd in ("cleardeaths",):
+        return await cmd_clear_deaths(manager, user_manager, discord_id)
+
     # Info commands (vehicles, costs, etc.)
     if cmd in ("vehicles", "vehiclecosts"):
         return cmd_vehicle_costs()
@@ -457,6 +475,10 @@ def cmd_help() -> str:
         "**Smart Items:** (separate from server pairing)\n"
         "`smartitems` - `addswitch <n> <id>` - `removeswitch <n>`\n"
         "`sson <n>` - `ssoff <n>` - `switches`\n\n"
+        "**Storage Monitors:**\n"
+        "`addSM <name> <id>` - `viewSM [name]` - `deleteSM <name>` - `storages`\n\n"
+        "**Death Tracking:**\n"
+        "`deaths` - `cleardeaths`\n\n"
         "**Costs & Info:**\n"
         "`vehicles` - `carmodules` - `price <item>`\n\n"
         "**Utilities:**\n"
@@ -1245,3 +1267,237 @@ def _time_till(now: float, target: float) -> str:
         hours = int(real_minutes // 60)
         mins = int(real_minutes % 60)
         return f"{hours}h {mins}m"
+
+
+# ===== Storage Monitor Commands =====
+
+async def cmd_add_storage(
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !addSM <name> <entity_id>
+    Add a storage monitor to track a storage container.
+    """
+    if not args:
+        return (
+            "Usage: `!addSM <name> <entity_id>`\n"
+            "Example: `!addSM main_loot 12345678`\n\n"
+            "Get entity IDs from Rust+ app when pairing storage containers."
+        )
+    
+    parts = args.split(None, 1)
+    if len(parts) != 2:
+        return "Usage: `!addSM <name> <entity_id>`"
+    
+    name, entity_id_str = parts
+    
+    # Validate entity ID
+    try:
+        entity_id = int(entity_id_str)
+    except ValueError:
+        return f"Invalid entity ID: `{entity_id_str}`. Must be a number."
+    
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected. Use `!change <server>` to connect first."
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    
+    success, message = storage_manager.add_monitor(
+        discord_id, server_key, name, entity_id
+    )
+    
+    if success:
+        message += f"\n\nCheck it with: `!viewSM {name}`"
+    
+    return message
+
+
+async def cmd_view_storage(
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str | discord.Embed | tuple:
+    """
+    !viewSM [name]
+    View contents of a storage monitor (or all if no name given).
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected."
+    
+    socket = manager.get_socket_for_user(discord_id)
+    if not socket:
+        return "Not connected to server."
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    user = user_manager.get_user(discord_id)
+    
+    if not args:
+        # Show all storage monitors
+        results = await storage_manager.check_all_for_user(socket, discord_id, server_key)
+        
+        if not results:
+            return (
+                f"**Storage Monitors on {active.get('name', active['ip'])}**\n"
+                "No storage monitors configured yet.\n\n"
+                "Use `!addSM <name> <entity_id>` to add one."
+            )
+        
+        # Return first storage as embed
+        embed = format_storage_embed(results[0], user.get('discord_name'))
+        
+        # If multiple storages, add summary
+        if len(results) > 1:
+            other_names = [s['name'] for s in results[1:]]
+            embed.add_field(
+                name=f"Other Storages ({len(results) - 1})",
+                value=", ".join(f"`{n}`" for n in other_names),
+                inline=False
+            )
+        
+        return embed
+    
+    # View specific storage
+    name = args.strip()
+    success, data = await storage_manager.check_storage(
+        socket, discord_id, server_key, name
+    )
+    
+    if not success:
+        return data  # Error message
+    
+    embed = format_storage_embed(data, user.get('discord_name'))
+    return embed
+
+
+async def cmd_remove_storage(
+        args: str,
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !deleteSM <name>
+    Remove a storage monitor.
+    """
+    if not args:
+        return "Usage: `!deleteSM <name>`"
+    
+    name = args.strip()
+    
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected."
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    
+    success, message = storage_manager.remove_monitor(discord_id, server_key, name)
+    return message
+
+
+def cmd_list_storages(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !storages
+    List all storage monitors for the current server.
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected."
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    monitors = storage_manager.get_monitors_for_user(discord_id, server_key)
+    
+    if not monitors:
+        return (
+            f"**Storage Monitors on {active.get('name', active['ip'])}**\n"
+            "No storage monitors configured yet.\n\n"
+            "Use `!addSM <name> <entity_id>` to add one."
+        )
+    
+    lines = []
+    for monitor in monitors:
+        lines.append(f"`{monitor['name']}` - Entity ID: `{monitor['entity_id']}`")
+    
+    return (
+        f"**Storage Monitors on {active.get('name', active['ip'])}** ({len(monitors)})\n" +
+        "\n".join(lines) +
+        "\n\nCheck contents: `!viewSM <name>`"
+    )
+
+
+# ===== Death Tracker Commands =====
+
+async def cmd_death_history(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> discord.Embed:
+    """
+    !deaths
+    Show recent death history for the current server.
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return discord.Embed(
+            title="Death History",
+            description="You need to register first.",
+            color=0xFF0000
+        )
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return discord.Embed(
+            title="Death History",
+            description="No server connected.",
+            color=0xFF0000
+        )
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    deaths = death_tracker.get_recent_deaths(discord_id, server_key, count=10)
+    
+    embed = format_death_history_embed(deaths, active.get('name', active['ip']))
+    return embed
+
+
+async def cmd_clear_deaths(
+        manager: MultiUserServerManager,
+        user_manager: UserManager,
+        discord_id: str
+) -> str:
+    """
+    !cleardeaths
+    Clear death history for the current server.
+    """
+    if not discord_id or not user_manager.has_user(discord_id):
+        return "You need to register first."
+    
+    active = manager.get_active_server_for_user(discord_id)
+    if not active:
+        return "No server connected."
+    
+    server_key = f"{active['ip']}:{active['port']}"
+    success, message = death_tracker.clear_history(discord_id, server_key)
+    
+    return message
+
+

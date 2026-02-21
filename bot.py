@@ -14,8 +14,9 @@ from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cm
 from server_manager_multiuser import MultiUserServerManager
 from commands import handle_query
 from timers import timer_manager
+from storage_monitor import storage_manager
+from death_tracker import death_tracker, format_death_embed
 from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
-from error_logger import setup_error_logging
 
 # -- Config -------------------------------
 load_dotenv()
@@ -37,9 +38,6 @@ log = logging.getLogger("RustBot")
 # Reduce rustplus library verbosity
 rustplus_logger = logging.getLogger("rustplus")
 rustplus_logger.setLevel(logging.WARNING)
-
-
-setup_error_logging()
 
 # -- Discord Client -------------------------------
 intents = discord.Intents.default()
@@ -136,6 +134,44 @@ async def server_status_loop():
             log.error(f"Status update loop error: {e}")
 
         await asyncio.sleep(45)
+
+
+async def death_tracking_loop():
+    """Background task that checks for player deaths every 10 seconds"""
+    await bot.wait_until_ready()
+    log.info("Death tracking loop started")
+
+    while not bot.is_closed():
+        try:
+            # Check deaths for all users with active connections
+            for discord_id, socket in list(manager._active_sockets.items()):
+                if not socket:
+                    continue
+                
+                active = manager.get_active_server_for_user(discord_id)
+                if not active:
+                    continue
+                
+                server_key = f"{active['ip']}:{active['port']}"
+                
+                # Get map size for grid calculation
+                try:
+                    info = await asyncio.wait_for(socket.get_info(), timeout=5.0)
+                    if not isinstance(info, RustError):
+                        map_size = info.size if hasattr(info, 'size') else 4000
+                        await death_tracker.check_team_deaths(
+                            socket, discord_id, server_key, map_size
+                        )
+                except asyncio.TimeoutError:
+                    pass
+                except Exception as e:
+                    log.warning(f"Death tracking error for user {discord_id}: {e}")
+
+        except Exception as e:
+            log.error(f"Death tracking loop error: {e}")
+
+        await asyncio.sleep(10)  # Check every 10 seconds
+
 
 #  ----- Connection Health Check and Auto-Reconnect ---------------------
 
@@ -342,6 +378,11 @@ async def on_ready():
     bot.loop.create_task(timer_manager.run_loop())
     log.info("Timer system started")
 
+    # Wire death tracker notifications
+    death_tracker.set_notify_callback(_on_player_death)
+    bot.loop.create_task(death_tracking_loop())
+    log.info("Death tracking system started")
+
     # Start FCM listeners for all registered users
     bot.loop.create_task(manager.start_all_fcm_listeners(on_new_server_paired))
 
@@ -415,10 +456,24 @@ async def on_new_server_paired(discord_id: str, server: dict):
 async def _on_timer_expired(label: str, text: str):
     """Called by TimerManager when a timer fires"""
     embed = discord.Embed(
-        title="⏰ Timer Expired",
+        title="[Timer] Expired",
         description=f"**{text}**\n_(was set for {label})_",
         color=0xCE422B,
     )
+    await notify(embed)
+
+
+async def _on_player_death(death_record: dict, server_key: str):
+    """Called by DeathTracker when a player dies"""
+    # Find server name from any user with this server
+    server_name = None
+    for discord_id in manager._active_servers:
+        active = manager._active_servers[discord_id]
+        if f"{active['ip']}:{active['port']}" == server_key:
+            server_name = active.get('name', server_key)
+            break
+    
+    embed = format_death_embed(death_record, server_name)
     await notify(embed)
 
 
