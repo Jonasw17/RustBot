@@ -15,6 +15,7 @@ from server_manager_multiuser import MultiUserServerManager
 from commands import handle_query
 from timers import timer_manager
 from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
+from error_logger import setup_error_logging
 
 # -- Config -------------------------------
 load_dotenv()
@@ -36,6 +37,9 @@ log = logging.getLogger("RustBot")
 # Reduce rustplus library verbosity
 rustplus_logger = logging.getLogger("rustplus")
 rustplus_logger.setLevel(logging.WARNING)
+
+
+setup_error_logging()
 
 # -- Discord Client -------------------------------
 intents = discord.Intents.default()

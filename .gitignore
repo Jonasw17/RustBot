@@ -10,3 +10,5 @@ rustplus.config.json
 users.json
 timers.json
 event_timestamps.json
+errors.log
+errors.log.*
