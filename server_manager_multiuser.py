@@ -175,53 +175,82 @@ class MultiUserServerManager:
         class UserPairingListener(FCMListener):
             def on_notification(self_inner, obj, notification, data_message):
                 try:
+                    # The pairing data is in data_message, not notification
                     data = data_message or {}
 
                     if data.get("channelId") != "pairing":
                         return
 
+                    # Parse the body JSON which contains the pairing info
                     body_str = data.get("body", "{}")
                     try:
                         body = json.loads(body_str)
                     except json.JSONDecodeError:
                         return
 
-                    if body.get("type") != "server":
-                        return
+                    pairing_type = body.get("type", "")
 
-                    ip = body.get("ip", "")
-                    port = body.get("port", "28017")
-                    name = body.get("name", ip)
-                    player_token = int(body.get("playerToken", 0))
+                    # Handle server pairing
+                    if pairing_type == "server":
+                        ip = body.get("ip", "")
+                        port = body.get("port", "28017")
+                        name = body.get("name", ip)
+                        player_token = int(body.get("playerToken", 0))
 
-                    if not ip or not player_token:
-                        return
+                        if not ip or not player_token:
+                            return
 
-                    log.info(f"[Pairing] Server paired by {user['discord_name']}: {name}")
+                        log.info(f"[Pairing] Server paired by {user['discord_name']}: {name}")
 
-                    # Add server to user's account
-                    user_manager.add_user_server(
-                        discord_id,
-                        ip,
-                        port,
-                        name,
-                        player_token
-                    )
+                        # Add server to user's account
+                        user_manager.add_user_server(
+                            discord_id,
+                            ip,
+                            port,
+                            name,
+                            player_token
+                        )
 
-                    # Auto-connect and notify
-                    async def _connect_and_notify():
-                        try:
-                            socket = await self.connect_for_user(discord_id, ip, port)
-                            await callback(discord_id, {
-                                "ip": ip,
-                                "port": port,
-                                "name": name,
-                                "player_token": player_token
-                            })
-                        except Exception as e:
-                            log.error(f"Post-pairing connection failed: {e}")
+                        # Auto-connect and notify
+                        async def _connect_and_notify():
+                            try:
+                                socket = await self.connect_for_user(discord_id, ip, port)
+                                await callback(discord_id, {
+                                    "ip": ip,
+                                    "port": port,
+                                    "name": name,
+                                    "player_token": player_token
+                                })
+                            except Exception as e:
+                                log.error(f"Post-pairing connection failed: {e}")
 
-                    asyncio.run_coroutine_threadsafe(_connect_and_notify(), loop)
+                        asyncio.run_coroutine_threadsafe(_connect_and_notify(), loop)
+
+                    # Handle entity pairing (storage, switches, etc.)
+                    elif pairing_type == "entity":
+                        entity_id = int(body.get("entityId", 0))
+                        entity_type = body.get("entityType", "")
+                        entity_name = body.get("entityName", "Unknown")
+
+                        if not entity_id:
+                            return
+
+                        log.info(
+                            f"[Pairing] Entity paired by {user['discord_name']}: "
+                            f"{entity_name} (ID: {entity_id}, Type: {entity_type})"
+                        )
+
+                        # Handle entity pairing through auto-pairing manager
+                        async def _handle_entity_pairing():
+                            try:
+                                from auto_pairing import auto_pairing_manager
+                                await auto_pairing_manager.handle_pairing_notification(
+                                    discord_id, body
+                                )
+                            except Exception as e:
+                                log.error(f"Error handling entity pairing: {e}")
+
+                        asyncio.run_coroutine_threadsafe(_handle_entity_pairing(), loop)
 
                 except Exception as e:
                     log.error(f"FCM listener error: {e}", exc_info=True)

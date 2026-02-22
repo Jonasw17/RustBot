@@ -16,6 +16,7 @@ from commands import handle_query
 from timers import timer_manager
 from storage_monitor import storage_manager
 from death_tracker import death_tracker, format_death_embed
+from auto_pairing import auto_pairing_manager
 from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
 
 # -- Config -------------------------------
@@ -383,6 +384,10 @@ async def on_ready():
     bot.loop.create_task(death_tracking_loop())
     log.info("Death tracking system started")
 
+    # Setup auto-pairing system
+    auto_pairing_manager.set_dependencies(user_manager, bot)
+    log.info("Auto-pairing system ready")
+
     # Start FCM listeners for all registered users
     bot.loop.create_task(manager.start_all_fcm_listeners(on_new_server_paired))
 
@@ -551,6 +556,31 @@ async def on_message(message: discord.Message):
         return
 
     content_lower = message.content.lower()
+    discord_id = str(message.author.id)
+
+    # Handle DMs for auto-pairing responses
+    if isinstance(message.channel, discord.DMChannel):
+        # Check if user has pending pairing
+        if auto_pairing_manager.has_pending_pairing(discord_id):
+            # User is responding to pairing prompt
+            name = message.content.strip()
+            success, response = await auto_pairing_manager.process_user_response(discord_id, name)
+            
+            if success:
+                embed = discord.Embed(
+                    title="[OK] Device Added!",
+                    description=response,
+                    color=0x00FF00
+                )
+            else:
+                embed = discord.Embed(
+                    title="[!] Error",
+                    description=response,
+                    color=0xFF0000
+                )
+            
+            await message.reply(embed=embed)
+            return
 
     # Chat relay: forward Discord → Rust
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
@@ -570,8 +600,6 @@ async def on_message(message: discord.Message):
 
     query = message.content[len(COMMAND_PREFIX):].strip()
     log.info(f"[{message.author}] ! {query or '(empty)'}")
-
-    discord_id = str(message.author.id)
 
     # Handle empty command - show help
     if not query:
