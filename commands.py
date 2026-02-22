@@ -246,6 +246,151 @@ def cmd_fragments(args: str) -> str:
 
 
 #  Main Router
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Auto-Pairing Test Commands
+# ──────────────────────────────────────────────────────────────────────────
+
+async def cmd_testdm(ctx, user_manager: UserManager) -> str:
+    """!testdm - Test if bot can send DMs"""
+    try:
+        await ctx.author.send(
+            "[OK] **DM Test Successful!**\n\n"
+            "If you see this message, the bot can send you DMs.\n"
+            "Auto-pairing notifications should work."
+        )
+        return "[OK] DM sent! Check your messages."
+    except discord.Forbidden:
+        return (
+            "[ERROR] **I can't DM you!**\n\n"
+            "To receive auto-pairing notifications:\n"
+            "1. Go to **Settings** → **Privacy & Safety**\n"
+            "2. Enable **'Allow direct messages from server members'**\n"
+            "3. Try again"
+        )
+    except Exception as e:
+        return f"[ERROR] Error: {e}"
+
+
+async def cmd_testpair(args: str, manager: MultiUserServerManager, user_manager: UserManager, discord_id: str) -> str:
+    """!testpair <entity_id> [type] - Test auto-pairing without FCM"""
+    if not args:
+        return (
+            "**Usage:** `!testpair <entity_id> [type]`\n\n"
+            "Examples:\n"
+            "> `!testpair 12345678` - Test storage container\n"
+            "> `!testpair 87654321 1` - Test smart switch\n\n"
+            "Types: 1=switch, 2=storage, 3=alarm"
+        )
+    
+    parts = args.split()
+    try:
+        entity_id = int(parts[0])
+    except ValueError:
+        return "[ERROR] Entity ID must be a number"
+    
+    entity_type = parts[1] if len(parts) > 1 else "2"
+    
+    if entity_type not in ["1", "2", "3", "4", "5"]:
+        return "[ERROR] Entity type must be 1-5 (1=switch, 2=storage, 3=alarm, 4=RF, 5=monitor)"
+    
+    user = user_manager.get_user(discord_id)
+    if not user:
+        return "[ERROR] You need to register first! Use `!register` in DM."
+    
+    active_server = manager.get_active_server_for_user(discord_id)
+    if not active_server:
+        return "[ERROR] You need to connect to a server first!"
+    
+    type_names = {
+        "1": "Smart Switch", "2": "Storage Container", "3": "Smart Alarm",
+        "4": "RF Broadcaster", "5": "Storage Monitor"
+    }
+    
+    notification_data = {
+        "type": "entity",
+        "entityId": entity_id,
+        "entityType": entity_type,
+        "entityName": f"Test {type_names.get(entity_type, 'Device')} #{entity_id}",
+        "ip": active_server["ip"],
+        "port": active_server["port"],
+        "name": active_server["name"]
+    }
+    
+    from auto_pairing import auto_pairing_manager
+    await auto_pairing_manager.handle_pairing_notification(discord_id, notification_data)
+    
+    return (
+        f"🧪 **Testing auto-pairing**\n\n"
+        f"> Entity ID: `{entity_id}`\n"
+        f"> Type: `{type_names.get(entity_type)}` (type {entity_type})\n"
+        f"> Server: `{active_server['name']}`\n\n"
+        f"**Check your DMs!** You should receive a pairing prompt."
+    )
+
+
+async def cmd_debugpair(manager: MultiUserServerManager, user_manager: UserManager, discord_id: str) -> discord.Embed:
+    """!debugpair - Check auto-pairing system status"""
+    from auto_pairing import auto_pairing_manager
+    
+    bot_ready = auto_pairing_manager._bot is not None
+    user_mgr_ready = auto_pairing_manager._user_manager is not None
+    has_pending = auto_pairing_manager.has_pending_pairing(discord_id)
+    user = user_manager.get_user(discord_id)
+    is_registered = user is not None
+    active_server = manager.get_active_server_for_user(discord_id)
+    is_connected = active_server is not None
+    fcm_running = discord_id in manager._fcm_listeners
+    
+    embed = discord.Embed(title="Auto-Pairing Debug Info", color=0x00AAFF)
+    
+    status_text = (
+        f"{('[OK]' if bot_ready else '[ERROR]')} Bot object: `{bot_ready}`\n"
+        f"{('[OK]' if user_mgr_ready else '[ERROR]')} User manager: `{user_mgr_ready}`\n"
+        f"{('[OK]' if is_registered else '[ERROR]')} User registered: `{is_registered}`\n"
+        f"{('[OK]' if is_connected else '[ERROR]')} Server connected: `{is_connected}`\n"
+        f"{('[OK]' if fcm_running else '[ERROR]')} FCM listener: `{fcm_running}`"
+    )
+    embed.add_field(name="System Status", value=status_text, inline=False)
+    
+    if has_pending:
+        pairing = auto_pairing_manager.get_pending_pairing(discord_id)
+        pairing_text = f"**Yes** - Entity ID: `{pairing.get('entity_id')}` (Type: {pairing.get('entity_type')})"
+    else:
+        pairing_text = "No pending pairing"
+    embed.add_field(name="Pairing Status", value=pairing_text, inline=False)
+    
+    issues = []
+    if not all([bot_ready, user_mgr_ready]):
+        issues.append("[WARNING] **Dependencies not set** - Bot needs restart")
+    if is_registered and not fcm_running:
+        issues.append("[WARNING] **FCM listener not running**")
+    if not is_registered:
+        issues.append("Use `!register` in DM")
+    elif not is_connected:
+        issues.append("Use `!connect` to connect")
+    
+    if issues:
+        embed.add_field(name="Notes", value="\n".join(issues), inline=False)
+    else:
+        embed.add_field(
+            name="[OK] System Ready",
+            value=(
+                "> `!testdm` - Verify DMs\n"
+                "> `!testpair <id>` - Simulate pairing\n"
+                "> Or pair in-game"
+            ),
+            inline=False
+        )
+    
+    if is_connected:
+        embed.set_footer(text=f"Connected to: {active_server['name']}")
+    
+    return embed
+
+
+
 async def handle_query(
         query: str,
         manager: MultiUserServerManager,
@@ -315,6 +460,14 @@ async def handle_query(
         return await cmd_death_history(manager, user_manager, discord_id)
     if cmd in ("cleardeaths",):
         return await cmd_clear_deaths(manager, user_manager, discord_id)
+
+    # Auto-pairing test commands
+    if cmd == "testdm":
+        return await cmd_testdm(ctx, user_manager)
+    if cmd == "testpair":
+        return await cmd_testpair(args, manager, user_manager, discord_id)
+    if cmd == "debugpair":
+        return await cmd_debugpair(manager, user_manager, discord_id)
 
     # Info commands (vehicles, costs, etc.)
     if cmd in ("vehicles", "vehiclecosts"):

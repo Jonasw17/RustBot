@@ -482,6 +482,166 @@ async def _on_player_death(death_record: dict, server_key: str):
     await notify(embed)
 
 
+@bot.command()
+async def testpair(ctx, entity_id: int, entity_type: str = "2"):
+    """
+    Test the auto-pairing system without FCM
+
+    Usage:
+        !testpair 12345678 2       - Test storage container
+        !testpair 87654321 1       - Test smart switch
+
+    This simulates receiving an FCM pairing notification
+    """
+    discord_id = str(ctx.author.id)
+
+    # Check if user is registered
+    user = user_manager.get_user(discord_id)
+    if not user:
+        await ctx.reply("❌ You need to register first! Use `!register` in DM.")
+        return
+
+    # Get user's active server
+    active_server = manager.get_active_server_for_user(discord_id)
+    if not active_server:
+        await ctx.reply("❌ You need to connect to a server first! Use `!connect <server>`")
+        return
+
+    # Create mock notification data
+    notification_data = {
+        "type": "entity",
+        "entityId": entity_id,
+        "entityType": entity_type,
+        "entityName": f"Test Device #{entity_id}",
+        "ip": active_server["ip"],
+        "port": active_server["port"],
+        "name": active_server["name"]
+    }
+
+    await ctx.reply(
+        f"🧪 Testing auto-pairing with:\n"
+        f"> Entity ID: `{entity_id}`\n"
+        f"> Type: `{entity_type}` (1=switch, 2=storage)\n"
+        f"> Server: `{active_server['name']}`\n\n"
+        f"Check your DMs!"
+    )
+
+    # Trigger auto-pairing
+    from auto_pairing import auto_pairing_manager
+    await auto_pairing_manager.handle_pairing_notification(discord_id, notification_data)
+
+
+@bot.command()
+async def testdm(ctx):
+    """Test if bot can send you DMs"""
+    try:
+        await ctx.author.send(
+            "✅ **DM Test Successful!**\n\n"
+            "If you see this message, the bot can send you DMs.\n"
+            "Auto-pairing notifications should work."
+        )
+        await ctx.reply("✅ DM sent! Check your messages.")
+    except discord.Forbidden:
+        await ctx.reply(
+            "❌ **I can't DM you!**\n\n"
+            "To receive auto-pairing notifications, you need to:\n"
+            "1. Go to **Settings** → **Privacy & Safety**\n"
+            "2. Enable **'Allow direct messages from server members'**\n"
+            "3. Try again"
+        )
+    except Exception as e:
+        await ctx.reply(f"❌ Error: {e}")
+
+
+@bot.command()
+async def debugpair(ctx):
+    """Check auto-pairing system status"""
+    discord_id = str(ctx.author.id)
+
+    # Check dependencies
+    from auto_pairing import auto_pairing_manager
+
+    bot_ready = auto_pairing_manager._bot is not None
+    user_mgr_ready = auto_pairing_manager._user_manager is not None
+    has_pending = auto_pairing_manager.has_pending_pairing(discord_id)
+
+    # Check user registration
+    user = user_manager.get_user(discord_id)
+    is_registered = user is not None
+
+    # Check active server
+    active_server = manager.get_active_server_for_user(discord_id)
+    is_connected = active_server is not None
+
+    # Check FCM listener
+    fcm_running = discord_id in manager._fcm_listeners
+
+    embed = discord.Embed(
+        title="🔍 Auto-Pairing Debug Info",
+        color=0x00AAFF
+    )
+
+    embed.add_field(
+        name="System Status",
+        value=(
+            f"{'✅' if bot_ready else '❌'} Bot object: {bot_ready}\n"
+            f"{'✅' if user_mgr_ready else '❌'} User manager: {user_mgr_ready}\n"
+            f"{'✅' if is_registered else '❌'} User registered: {is_registered}\n"
+            f"{'✅' if is_connected else '❌'} Server connected: {is_connected}\n"
+            f"{'✅' if fcm_running else '❌'} FCM listener: {fcm_running}"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="Pairing Status",
+        value=(
+            f"Pending pairing: {'Yes' if has_pending else 'No'}\n"
+        ),
+        inline=False
+    )
+
+    if not all([bot_ready, user_mgr_ready]):
+        embed.add_field(
+            name="⚠️ Issue Detected",
+            value="Auto-pairing dependencies not set. Bot needs restart.",
+            inline=False
+        )
+
+    if is_registered and not fcm_running:
+        embed.add_field(
+            name="⚠️ Issue Detected",
+            value="FCM listener not running. Pairing notifications won't be received.",
+            inline=False
+        )
+
+    if not is_registered:
+        embed.add_field(
+            name="ℹ️ Next Steps",
+            value="Register first with `!register` in DM",
+            inline=False
+        )
+    elif not is_connected:
+        embed.add_field(
+            name="ℹ️ Next Steps",
+            value="Connect to a server with `!connect <name>`",
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="ℹ️ Ready to Test",
+            value=(
+                "1. Test DMs: `!testdm`\n"
+                "2. Simulate pairing: `!testpair <entity_id>`\n"
+                "3. Or pair in-game and check for notification"
+            ),
+            inline=False
+        )
+
+    await ctx.reply(embed=embed)
+
+
+
 # -- In-game → Discord -------------------------------
 async def _on_rust_chat_message(event):
     """Callback fired when team chat message arrives in-game"""

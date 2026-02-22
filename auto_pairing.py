@@ -27,66 +27,71 @@ log = logging.getLogger("AutoPairing")
 class AutoPairingManager:
     """
     Manages automatic entity pairing from in-game FCM notifications.
-    
+
     When you pair a device in-game, the FCM notification contains:
     - Entity ID
     - Entity Type (storage, switch, alarm, etc.)
     - Server info
-    
+
     This manager captures that and prompts user to name the device.
     """
-    
+
     def __init__(self):
         self._pending_pairs: Dict[str, dict] = {}  # discord_id -> pairing data
         self._pairing_callbacks: Dict[str, Callable] = {}  # entity_type -> callback
         self._user_manager = None
         self._bot = None
-    
+
     def set_dependencies(self, user_manager, bot):
         """Set required dependencies"""
         self._user_manager = user_manager
         self._bot = bot
-    
+
     def register_entity_handler(self, entity_type: str, callback: Callable):
         """
         Register a callback for handling specific entity types.
-        
+
         Args:
             entity_type: Type of entity (e.g., "2" for storage, "1" for switch)
             callback: async function(discord_id, server_key, name, entity_id)
         """
         self._pairing_callbacks[entity_type] = callback
-    
+
     async def handle_pairing_notification(self, discord_id: str, notification_data: dict):
         """
         Process a pairing notification from FCM.
-        
+
         Args:
             discord_id: Discord user ID
             notification_data: Parsed FCM notification body
         """
         try:
+            log.info(f"[AutoPair] Received notification for user {discord_id}")
+            log.info(f"[AutoPair] Notification data: {notification_data}")
+
             # Extract pairing data
             entity_type = notification_data.get("type", "")
             entity_id = int(notification_data.get("entityId", 0))
             entity_name = notification_data.get("entityName", "Unknown")
-            
+
             # Server info
             ip = notification_data.get("ip", "")
             port = notification_data.get("port", "28017")
             server_name = notification_data.get("name", ip)
-            
+
+            log.info(f"[AutoPair] Parsed - Type: {entity_type}, ID: {entity_id}, Name: {entity_name}, Server: {server_name}")
+
             if not entity_id or not ip:
-                log.warning(f"Incomplete pairing data: {notification_data}")
+                log.warning(f"[AutoPair] Incomplete pairing data - entity_id: {entity_id}, ip: {ip}")
                 return
-            
+
             server_key = f"{ip}:{port}"
-            
+
             log.info(
                 f"[Auto-Pair] User {discord_id} paired {entity_name} "
                 f"(ID: {entity_id}, Type: {entity_type}) on {server_name}"
             )
-            
+
             # Store pending pairing
             self._pending_pairs[discord_id] = {
                 "entity_id": entity_id,
@@ -97,30 +102,40 @@ class AutoPairingManager:
                 "ip": ip,
                 "port": port
             }
-            
+
             # Send DM to user asking for name
             await self._prompt_user_for_name(discord_id)
-            
+
         except Exception as e:
             log.error(f"Error handling pairing notification: {e}", exc_info=True)
-    
+
     async def _prompt_user_for_name(self, discord_id: str):
         """Send DM to user asking them to name the paired device"""
+        log.info(f"[AutoPair] Attempting to send DM to user {discord_id}")
+
         if not self._bot or not self._user_manager:
+            log.error(f"[AutoPair] Missing dependencies - bot: {self._bot is not None}, user_manager: {self._user_manager is not None}")
             return
-        
+
         user = self._user_manager.get_user(discord_id)
         if not user:
+            log.error(f"[AutoPair] User {discord_id} not found")
             return
-        
+
+        log.info(f"[AutoPair] User found: {user.get('discord_name')}")
+
         pairing = self._pending_pairs.get(discord_id)
         if not pairing:
+            log.error(f"[AutoPair] No pending pairing for user {discord_id}")
             return
-        
+
+        log.info(f"[AutoPair] Pending pairing found: Entity ID {pairing['entity_id']}")
+
         try:
             # Get Discord user object
             discord_user = await self._bot.fetch_user(int(discord_id))
-            
+            log.info(f"[AutoPair] Fetched Discord user: {discord_user.name}")
+
             # Determine entity type name
             entity_type_names = {
                 "1": "Smart Switch",
@@ -129,12 +144,12 @@ class AutoPairingManager:
                 "4": "RF Broadcaster",
                 "5": "Storage Monitor"
             }
-            
+
             type_name = entity_type_names.get(
-                pairing["entity_type"], 
+                pairing["entity_type"],
                 f"Device (type {pairing['entity_type']})"
             )
-            
+
             embed = discord.Embed(
                 title="[+] New Device Paired!",
                 description=(
@@ -145,7 +160,7 @@ class AutoPairingManager:
                 ),
                 color=0x00FF00
             )
-            
+
             embed.add_field(
                 name="What would you like to name it?",
                 value=(
@@ -154,54 +169,54 @@ class AutoPairingManager:
                 ),
                 inline=False
             )
-            
+
             embed.set_footer(text="Reply within 5 minutes")
-            
+
             await discord_user.send(embed=embed)
-            log.info(f"Sent pairing prompt to user {user['discord_name']}")
-            
+            log.info(f"[AutoPair] DM sent successfully to {user['discord_name']}")
+
         except discord.Forbidden:
-            log.warning(f"Cannot send DM to user {discord_id} - DMs disabled")
+            log.warning(f"[AutoPair] Cannot send DM to user {discord_id} - DMs disabled")
         except Exception as e:
-            log.error(f"Error sending pairing prompt: {e}")
-    
+            log.error(f"[AutoPair] Error sending pairing prompt: {e}", exc_info=True)
+
     async def process_user_response(self, discord_id: str, name: str) -> tuple[bool, str]:
         """
         Process user's response to naming prompt.
-        
+
         Args:
             discord_id: Discord user ID
             name: Name user wants to give the device
-            
+
         Returns:
             (success, message)
         """
         if discord_id not in self._pending_pairs:
             return False, "No pending pairing found. The pairing may have expired."
-        
+
         pairing = self._pending_pairs[discord_id]
-        
+
         # Check if user wants to skip
         if name.lower() == "skip":
             del self._pending_pairs[discord_id]
             return True, "Pairing skipped."
-        
+
         # Validate name
         if not name or len(name) > 50:
             return False, "Name must be 1-50 characters."
-        
+
         # Check for invalid characters
         if not name.replace("_", "").replace("-", "").isalnum():
             return False, "Name can only contain letters, numbers, underscores, and hyphens."
-        
+
         # Find appropriate callback based on entity type
         entity_type = pairing["entity_type"]
-        
+
         # Map entity types to handlers
         # Type 2 = Storage containers
         # Type 1 = Smart switches
         # Type 3 = Smart alarms
-        
+
         try:
             if entity_type == "2":
                 # Storage container
@@ -227,30 +242,30 @@ class AutoPairingManager:
                     f"Entity type `{entity_type}` not supported yet.\n"
                     f"Entity ID: `{pairing['entity_id']}` - You can add it manually."
                 )
-            
+
             # Clean up pending pairing
             del self._pending_pairs[discord_id]
-            
+
             if success:
                 message += (
                     f"\n\n**Server:** {pairing['server_name']}\n"
                     f"**Entity ID:** `{pairing['entity_id']}`"
                 )
-            
+
             return success, message
-            
+
         except Exception as e:
             log.error(f"Error processing pairing: {e}", exc_info=True)
             return False, f"Error adding device: {str(e)[:100]}"
-    
+
     def has_pending_pairing(self, discord_id: str) -> bool:
         """Check if user has a pending pairing"""
         return discord_id in self._pending_pairs
-    
+
     def get_pending_pairing(self, discord_id: str) -> Optional[dict]:
         """Get pending pairing data for user"""
         return self._pending_pairs.get(discord_id)
-    
+
     def clear_pending(self, discord_id: str):
         """Clear pending pairing for user"""
         if discord_id in self._pending_pairs:
@@ -264,14 +279,14 @@ auto_pairing_manager = AutoPairingManager()
 def parse_fcm_notification(data_message: dict) -> Optional[dict]:
     """
     Parse FCM notification to extract pairing data.
-    
+
     FCM notifications have structure:
     {
         "channelId": "pairing",
         "body": "{json_string}",
         ...
     }
-    
+
     The body contains:
     {
         "type": "entity" or "server",
@@ -287,17 +302,17 @@ def parse_fcm_notification(data_message: dict) -> Optional[dict]:
         # Check if this is a pairing notification
         if data_message.get("channelId") != "pairing":
             return None
-        
+
         # Parse the body JSON
         body_str = data_message.get("body", "{}")
         body = json.loads(body_str)
-        
+
         # Check if this is an entity pairing (not server pairing)
         if body.get("type") == "entity":
             return body
-        
+
         return None
-        
+
     except json.JSONDecodeError:
         log.warning(f"Could not parse FCM body: {data_message.get('body')}")
         return None

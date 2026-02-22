@@ -175,29 +175,51 @@ class MultiUserServerManager:
         class UserPairingListener(FCMListener):
             def on_notification(self_inner, obj, notification, data_message):
                 try:
+                    # 🔍 DEBUG: Log EVERYTHING
+                    log.warning("=" * 80)
+                    log.warning("[FCM DEBUG] ⚡ Notification received!")
+                    log.warning(f"[FCM DEBUG] Notification object: {notification}")
+                    log.warning(f"[FCM DEBUG] Data message: {json.dumps(data_message or {}, indent=2)}")
+
                     # The pairing data is in data_message, not notification
                     data = data_message or {}
 
-                    if data.get("channelId") != "pairing":
+                    channel_id = data.get("channelId", "")
+                    log.warning(f"[FCM DEBUG] Channel ID: {channel_id!r}")
+
+                    if channel_id != "pairing":
+                        log.warning(f"[FCM DEBUG] ❌ Not a pairing notification (channelId={channel_id})")
+                        log.warning("=" * 80)
                         return
 
                     # Parse the body JSON which contains the pairing info
                     body_str = data.get("body", "{}")
+                    log.warning(f"[FCM DEBUG] Body string: {body_str!r}")
+
                     try:
                         body = json.loads(body_str)
-                    except json.JSONDecodeError:
+                        log.warning(f"[FCM DEBUG] Parsed body: {json.dumps(body, indent=2)}")
+                    except json.JSONDecodeError as e:
+                        log.error(f"[FCM DEBUG] ❌ Failed to parse body JSON: {e}")
+                        log.warning("=" * 80)
                         return
 
                     pairing_type = body.get("type", "")
+                    log.warning(f"[FCM DEBUG] Pairing type: {pairing_type!r}")
 
                     # Handle server pairing
                     if pairing_type == "server":
+                        log.warning("[FCM DEBUG] 🖥️ Processing SERVER pairing")
                         ip = body.get("ip", "")
                         port = body.get("port", "28017")
                         name = body.get("name", ip)
                         player_token = int(body.get("playerToken", 0))
 
+                        log.warning(f"[FCM DEBUG] Server details: {name} ({ip}:{port}), token={player_token}")
+
                         if not ip or not player_token:
+                            log.warning("[FCM DEBUG] ❌ Missing IP or player token")
+                            log.warning("=" * 80)
                             return
 
                         log.info(f"[Pairing] Server paired by {user['discord_name']}: {name}")
@@ -225,14 +247,26 @@ class MultiUserServerManager:
                                 log.error(f"Post-pairing connection failed: {e}")
 
                         asyncio.run_coroutine_threadsafe(_connect_and_notify(), loop)
+                        log.warning("[FCM DEBUG] ✅ Server pairing completed")
+                        log.warning("=" * 80)
 
                     # Handle entity pairing (storage, switches, etc.)
                     elif pairing_type == "entity":
+                        log.warning("[FCM DEBUG] 📦 Processing ENTITY pairing")
+
+                        # Try both possible field names
                         entity_id = int(body.get("entityId", 0))
-                        entity_type = body.get("entityType", "")
+                        entity_type = body.get("entityType") or body.get("type", "")
                         entity_name = body.get("entityName", "Unknown")
 
+                        log.warning(f"[FCM DEBUG] Entity details:")
+                        log.warning(f"  - ID: {entity_id}")
+                        log.warning(f"  - Type: {entity_type!r}")
+                        log.warning(f"  - Name: {entity_name!r}")
+
                         if not entity_id:
+                            log.warning("[FCM DEBUG] ❌ Entity ID is 0 or missing")
+                            log.warning("=" * 80)
                             return
 
                         log.info(
@@ -241,19 +275,30 @@ class MultiUserServerManager:
                         )
 
                         # Handle entity pairing through auto-pairing manager
+                        log.warning("[FCM DEBUG] Calling auto_pairing_manager...")
+
                         async def _handle_entity_pairing():
                             try:
                                 from auto_pairing import auto_pairing_manager
+                                log.warning(f"[FCM DEBUG] Auto-pairing manager imported")
                                 await auto_pairing_manager.handle_pairing_notification(
                                     discord_id, body
                                 )
+                                log.warning(f"[FCM DEBUG] Auto-pairing handler completed")
                             except Exception as e:
-                                log.error(f"Error handling entity pairing: {e}")
+                                log.error(f"[FCM DEBUG] ❌ Error handling entity pairing: {e}", exc_info=True)
 
                         asyncio.run_coroutine_threadsafe(_handle_entity_pairing(), loop)
+                        log.warning("[FCM DEBUG] ✅ Entity pairing dispatched")
+                        log.warning("=" * 80)
+
+                    else:
+                        log.warning(f"[FCM DEBUG] ❌ Unknown pairing type: {pairing_type!r}")
+                        log.warning("=" * 80)
 
                 except Exception as e:
-                    log.error(f"FCM listener error: {e}", exc_info=True)
+                    log.error(f"[FCM DEBUG] ❌ FCM listener error: {e}", exc_info=True)
+                    log.warning("=" * 80)
 
         def _run_fcm():
             try:
