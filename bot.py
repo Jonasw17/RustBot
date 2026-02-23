@@ -14,9 +14,6 @@ from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cm
 from server_manager_multiuser import MultiUserServerManager
 from commands import handle_query
 from timers import timer_manager
-from storage_monitor import storage_manager
-from death_tracker import death_tracker, format_death_embed
-from auto_pairing import auto_pairing_manager
 from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_time_val
 
 # -- Config -------------------------------
@@ -135,44 +132,6 @@ async def server_status_loop():
             log.error(f"Status update loop error: {e}")
 
         await asyncio.sleep(45)
-
-
-async def death_tracking_loop():
-    """Background task that checks for player deaths every 10 seconds"""
-    await bot.wait_until_ready()
-    log.info("Death tracking loop started")
-
-    while not bot.is_closed():
-        try:
-            # Check deaths for all users with active connections
-            for discord_id, socket in list(manager._active_sockets.items()):
-                if not socket:
-                    continue
-                
-                active = manager.get_active_server_for_user(discord_id)
-                if not active:
-                    continue
-                
-                server_key = f"{active['ip']}:{active['port']}"
-                
-                # Get map size for grid calculation
-                try:
-                    info = await asyncio.wait_for(socket.get_info(), timeout=5.0)
-                    if not isinstance(info, RustError):
-                        map_size = info.size if hasattr(info, 'size') else 4000
-                        await death_tracker.check_team_deaths(
-                            socket, discord_id, server_key, map_size
-                        )
-                except asyncio.TimeoutError:
-                    pass
-                except Exception as e:
-                    log.warning(f"Death tracking error for user {discord_id}: {e}")
-
-        except Exception as e:
-            log.error(f"Death tracking loop error: {e}")
-
-        await asyncio.sleep(10)  # Check every 10 seconds
-
 
 #  ----- Connection Health Check and Auto-Reconnect ---------------------
 
@@ -379,17 +338,8 @@ async def on_ready():
     bot.loop.create_task(timer_manager.run_loop())
     log.info("Timer system started")
 
-    # Wire death tracker notifications
-    death_tracker.set_notify_callback(_on_player_death)
-    bot.loop.create_task(death_tracking_loop())
-    log.info("Death tracking system started")
-
-    # Setup auto-pairing system
-    auto_pairing_manager.set_dependencies(user_manager, bot)
-    log.info("Auto-pairing system ready")
-
     # Start FCM listeners for all registered users
-    bot.loop.create_task(manager.start_all_fcm_listeners(on_new_server_paired))
+    bot.loop.create_task(manager.start_all_fcm_listeners(on_new_pairing))
 
     # Show registration status
     user_count = len(user_manager.list_users())
@@ -447,199 +397,66 @@ def _log_channel_config():
     log.info(f"  Chat relay    → {_ch(CHAT_RELAY_CHANNEL)}")
 
 
-async def on_new_server_paired(discord_id: str, server: dict):
-    """Called when a user pairs a new server"""
+async def on_new_pairing(discord_id: str, pairing_data: dict):
+    """Called when a user pairs a new server OR smart device"""
     user = user_manager.get_user(discord_id)
     if not user:
         return
 
-    name = server.get("name", server["ip"])
-    log.info(f"New server paired by {user['discord_name']}: {name}")
+    pairing_type = pairing_data.get("type")
 
-    await update_status_message(discord_id)
+    if pairing_type == "server":
+        # Server pairing
+        name = pairing_data.get("name", pairing_data["ip"])
+        log.info(f"New server paired by {user['discord_name']}: {name}")
+
+        embed = discord.Embed(
+            title="[Pairing] Server Paired",
+            description=f"**{name}**\n`{pairing_data['ip']}:{pairing_data['port']}`",
+            color=0x00FF00
+        )
+        embed.set_footer(text=f"Paired by {user['discord_name']}")
+        await notify(embed)
+        await update_status_message(discord_id)
+
+    elif pairing_type == "entity":
+        # Smart device pairing
+        entity_name = pairing_data.get("entity_name", "Unknown Device")
+        entity_id = pairing_data.get("entity_id")
+        entity_type = pairing_data.get("entity_type", "unknown")
+
+        log.info(f"Smart device paired by {user['discord_name']}: {entity_name} (ID: {entity_id})")
+
+        # Get entity type display name
+        type_names = {
+            1: "Smart Switch",
+            2: "Smart Alarm",
+            3: "Storage Monitor",
+            4: "Unknown Device"
+        }
+        type_display = type_names.get(entity_type, f"Device Type {entity_type}")
+
+        embed = discord.Embed(
+            title="[Pairing] Smart Device Paired",
+            description=(
+                f"**{entity_name}**\n"
+                f"Type: {type_display}\n"
+                f"Entity ID: `{entity_id}`"
+            ),
+            color=0x00FFFF
+        )
+        embed.set_footer(text=f"Paired by {user['discord_name']} | Use !addswitch to register")
+        await notify(embed)
+
 
 async def _on_timer_expired(label: str, text: str):
     """Called by TimerManager when a timer fires"""
     embed = discord.Embed(
-        title="[Timer] Expired",
+        title="⏰ Timer Expired",
         description=f"**{text}**\n_(was set for {label})_",
         color=0xCE422B,
     )
     await notify(embed)
-
-
-async def _on_player_death(death_record: dict, server_key: str):
-    """Called by DeathTracker when a player dies"""
-    # Find server name from any user with this server
-    server_name = None
-    for discord_id in manager._active_servers:
-        active = manager._active_servers[discord_id]
-        if f"{active['ip']}:{active['port']}" == server_key:
-            server_name = active.get('name', server_key)
-            break
-    
-    embed = format_death_embed(death_record, server_name)
-    await notify(embed)
-
-
-@bot.command()
-async def testpair(ctx, entity_id: int, entity_type: str = "2"):
-    """
-    Test the auto-pairing system without FCM
-
-    Usage:
-        !testpair 12345678 2       - Test storage container
-        !testpair 87654321 1       - Test smart switch
-
-    This simulates receiving an FCM pairing notification
-    """
-    discord_id = str(ctx.author.id)
-
-    # Check if user is registered
-    user = user_manager.get_user(discord_id)
-    if not user:
-        await ctx.reply("❌ You need to register first! Use `!register` in DM.")
-        return
-
-    # Get user's active server
-    active_server = manager.get_active_server_for_user(discord_id)
-    if not active_server:
-        await ctx.reply("❌ You need to connect to a server first! Use `!connect <server>`")
-        return
-
-    # Create mock notification data
-    notification_data = {
-        "type": "entity",
-        "entityId": entity_id,
-        "entityType": entity_type,
-        "entityName": f"Test Device #{entity_id}",
-        "ip": active_server["ip"],
-        "port": active_server["port"],
-        "name": active_server["name"]
-    }
-
-    await ctx.reply(
-        f"🧪 Testing auto-pairing with:\n"
-        f"> Entity ID: `{entity_id}`\n"
-        f"> Type: `{entity_type}` (1=switch, 2=storage)\n"
-        f"> Server: `{active_server['name']}`\n\n"
-        f"Check your DMs!"
-    )
-
-    # Trigger auto-pairing
-    from auto_pairing import auto_pairing_manager
-    await auto_pairing_manager.handle_pairing_notification(discord_id, notification_data)
-
-
-@bot.command()
-async def testdm(ctx):
-    """Test if bot can send you DMs"""
-    try:
-        await ctx.author.send(
-            "✅ **DM Test Successful!**\n\n"
-            "If you see this message, the bot can send you DMs.\n"
-            "Auto-pairing notifications should work."
-        )
-        await ctx.reply("✅ DM sent! Check your messages.")
-    except discord.Forbidden:
-        await ctx.reply(
-            "❌ **I can't DM you!**\n\n"
-            "To receive auto-pairing notifications, you need to:\n"
-            "1. Go to **Settings** → **Privacy & Safety**\n"
-            "2. Enable **'Allow direct messages from server members'**\n"
-            "3. Try again"
-        )
-    except Exception as e:
-        await ctx.reply(f"❌ Error: {e}")
-
-
-@bot.command()
-async def debugpair(ctx):
-    """Check auto-pairing system status"""
-    discord_id = str(ctx.author.id)
-
-    # Check dependencies
-    from auto_pairing import auto_pairing_manager
-
-    bot_ready = auto_pairing_manager._bot is not None
-    user_mgr_ready = auto_pairing_manager._user_manager is not None
-    has_pending = auto_pairing_manager.has_pending_pairing(discord_id)
-
-    # Check user registration
-    user = user_manager.get_user(discord_id)
-    is_registered = user is not None
-
-    # Check active server
-    active_server = manager.get_active_server_for_user(discord_id)
-    is_connected = active_server is not None
-
-    # Check FCM listener
-    fcm_running = discord_id in manager._fcm_listeners
-
-    embed = discord.Embed(
-        title="🔍 Auto-Pairing Debug Info",
-        color=0x00AAFF
-    )
-
-    embed.add_field(
-        name="System Status",
-        value=(
-            f"{'✅' if bot_ready else '❌'} Bot object: {bot_ready}\n"
-            f"{'✅' if user_mgr_ready else '❌'} User manager: {user_mgr_ready}\n"
-            f"{'✅' if is_registered else '❌'} User registered: {is_registered}\n"
-            f"{'✅' if is_connected else '❌'} Server connected: {is_connected}\n"
-            f"{'✅' if fcm_running else '❌'} FCM listener: {fcm_running}"
-        ),
-        inline=False
-    )
-
-    embed.add_field(
-        name="Pairing Status",
-        value=(
-            f"Pending pairing: {'Yes' if has_pending else 'No'}\n"
-        ),
-        inline=False
-    )
-
-    if not all([bot_ready, user_mgr_ready]):
-        embed.add_field(
-            name="⚠️ Issue Detected",
-            value="Auto-pairing dependencies not set. Bot needs restart.",
-            inline=False
-        )
-
-    if is_registered and not fcm_running:
-        embed.add_field(
-            name="⚠️ Issue Detected",
-            value="FCM listener not running. Pairing notifications won't be received.",
-            inline=False
-        )
-
-    if not is_registered:
-        embed.add_field(
-            name="ℹ️ Next Steps",
-            value="Register first with `!register` in DM",
-            inline=False
-        )
-    elif not is_connected:
-        embed.add_field(
-            name="ℹ️ Next Steps",
-            value="Connect to a server with `!connect <name>`",
-            inline=False
-        )
-    else:
-        embed.add_field(
-            name="ℹ️ Ready to Test",
-            value=(
-                "1. Test DMs: `!testdm`\n"
-                "2. Simulate pairing: `!testpair <entity_id>`\n"
-                "3. Or pair in-game and check for notification"
-            ),
-            inline=False
-        )
-
-    await ctx.reply(embed=embed)
-
 
 
 # -- In-game → Discord -------------------------------
@@ -716,31 +533,6 @@ async def on_message(message: discord.Message):
         return
 
     content_lower = message.content.lower()
-    discord_id = str(message.author.id)
-
-    # Handle DMs for auto-pairing responses
-    if isinstance(message.channel, discord.DMChannel):
-        # Check if user has pending pairing
-        if auto_pairing_manager.has_pending_pairing(discord_id):
-            # User is responding to pairing prompt
-            name = message.content.strip()
-            success, response = await auto_pairing_manager.process_user_response(discord_id, name)
-            
-            if success:
-                embed = discord.Embed(
-                    title="[OK] Device Added!",
-                    description=response,
-                    color=0x00FF00
-                )
-            else:
-                embed = discord.Embed(
-                    title="[!] Error",
-                    description=response,
-                    color=0xFF0000
-                )
-            
-            await message.reply(embed=embed)
-            return
 
     # Chat relay: forward Discord → Rust
     if CHAT_RELAY_CHANNEL and message.channel.id == CHAT_RELAY_CHANNEL:
@@ -760,6 +552,8 @@ async def on_message(message: discord.Message):
 
     query = message.content[len(COMMAND_PREFIX):].strip()
     log.info(f"[{message.author}] ! {query or '(empty)'}")
+
+    discord_id = str(message.author.id)
 
     # Handle empty command - show help
     if not query:

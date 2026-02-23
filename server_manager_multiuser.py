@@ -47,7 +47,7 @@ class MultiUserServerManager:
         """Register callback for team chat messages"""
         self._chat_callbacks.append(callback)
 
-    # ── Per-User Connection Management ────────────────────────────────────────
+    # -- Per-User Connection Management ----------------------------------------
     async def connect_for_user(self, discord_id: str, ip: str, port: str) -> RustSocket:
         """
         Connect to a server using a specific user's credentials.
@@ -72,7 +72,7 @@ class MultiUserServerManager:
         if not server:
             raise ValueError(
                 f"Server {ip}:{port} not paired for this user.\n"
-                f"Join the server in-game and press ESC → Rust+ → Pair Server"
+                f"Join the server in-game and press ESC -> Rust+ -> Pair Server"
             )
 
         # Disconnect any existing socket for this user
@@ -131,7 +131,7 @@ class MultiUserServerManager:
         servers = user.get("paired_servers", {})
         if not servers:
             raise ValueError(
-                "No servers paired. Join a Rust server and use ESC → Rust+ → Pair Server"
+                "No servers paired. Join a Rust server and use ESC -> Rust+ -> Pair Server"
             )
 
         first_server = list(servers.values())[0]
@@ -149,11 +149,11 @@ class MultiUserServerManager:
         """Get the server a user is currently connected to"""
         return self._active_servers.get(discord_id)
 
-    # ── Auto-Pairing via FCM (Per User) ───────────────────────────────────────
+    # -- Auto-Pairing via FCM (Per User) ---------------------------------------
     async def start_fcm_listener_for_user(self, discord_id: str, callback: Callable):
         """
         Start FCM listener for a specific user.
-        When they pair servers in-game, automatically adds to their account.
+        When they pair servers OR smart devices in-game, automatically processes them.
         """
         user = self.user_manager.get_user(discord_id)
         if not user:
@@ -175,51 +175,27 @@ class MultiUserServerManager:
         class UserPairingListener(FCMListener):
             def on_notification(self_inner, obj, notification, data_message):
                 try:
-                    # 🔍 DEBUG: Log EVERYTHING
-                    log.warning("=" * 80)
-                    log.warning("[FCM DEBUG] ⚡ Notification received!")
-                    log.warning(f"[FCM DEBUG] Notification object: {notification}")
-                    log.warning(f"[FCM DEBUG] Data message: {json.dumps(data_message or {}, indent=2)}")
-
-                    # The pairing data is in data_message, not notification
                     data = data_message or {}
 
-                    channel_id = data.get("channelId", "")
-                    log.warning(f"[FCM DEBUG] Channel ID: {channel_id!r}")
-
-                    if channel_id != "pairing":
-                        log.warning(f"[FCM DEBUG] ❌ Not a pairing notification (channelId={channel_id})")
-                        log.warning("=" * 80)
+                    if data.get("channelId") != "pairing":
                         return
 
-                    # Parse the body JSON which contains the pairing info
                     body_str = data.get("body", "{}")
-                    log.warning(f"[FCM DEBUG] Body string: {body_str!r}")
-
                     try:
                         body = json.loads(body_str)
-                        log.warning(f"[FCM DEBUG] Parsed body: {json.dumps(body, indent=2)}")
-                    except json.JSONDecodeError as e:
-                        log.error(f"[FCM DEBUG] ❌ Failed to parse body JSON: {e}")
-                        log.warning("=" * 80)
+                    except json.JSONDecodeError:
                         return
 
                     pairing_type = body.get("type", "")
-                    log.warning(f"[FCM DEBUG] Pairing type: {pairing_type!r}")
 
-                    # Handle server pairing
+                    # Handle SERVER pairing
                     if pairing_type == "server":
-                        log.warning("[FCM DEBUG] 🖥️ Processing SERVER pairing")
                         ip = body.get("ip", "")
                         port = body.get("port", "28017")
                         name = body.get("name", ip)
                         player_token = int(body.get("playerToken", 0))
 
-                        log.warning(f"[FCM DEBUG] Server details: {name} ({ip}:{port}), token={player_token}")
-
                         if not ip or not player_token:
-                            log.warning("[FCM DEBUG] ❌ Missing IP or player token")
-                            log.warning("=" * 80)
                             return
 
                         log.info(f"[Pairing] Server paired by {user['discord_name']}: {name}")
@@ -238,6 +214,7 @@ class MultiUserServerManager:
                             try:
                                 socket = await self.connect_for_user(discord_id, ip, port)
                                 await callback(discord_id, {
+                                    "type": "server",
                                     "ip": ip,
                                     "port": port,
                                     "name": name,
@@ -247,58 +224,34 @@ class MultiUserServerManager:
                                 log.error(f"Post-pairing connection failed: {e}")
 
                         asyncio.run_coroutine_threadsafe(_connect_and_notify(), loop)
-                        log.warning("[FCM DEBUG] ✅ Server pairing completed")
-                        log.warning("=" * 80)
 
-                    # Handle entity pairing (storage, switches, etc.)
+                    # Handle SMART DEVICE pairing
                     elif pairing_type == "entity":
-                        log.warning("[FCM DEBUG] 📦 Processing ENTITY pairing")
-
-                        # Try both possible field names
-                        entity_id = int(body.get("entityId", 0))
-                        entity_type = body.get("entityType") or body.get("type", "")
-                        entity_name = body.get("entityName", "Unknown")
-
-                        log.warning(f"[FCM DEBUG] Entity details:")
-                        log.warning(f"  - ID: {entity_id}")
-                        log.warning(f"  - Type: {entity_type!r}")
-                        log.warning(f"  - Name: {entity_name!r}")
+                        entity_id = body.get("entityId")
+                        entity_type = body.get("entityType")
+                        entity_name = body.get("entityName", f"Device {entity_id}")
 
                         if not entity_id:
-                            log.warning("[FCM DEBUG] ❌ Entity ID is 0 or missing")
-                            log.warning("=" * 80)
                             return
 
-                        log.info(
-                            f"[Pairing] Entity paired by {user['discord_name']}: "
-                            f"{entity_name} (ID: {entity_id}, Type: {entity_type})"
-                        )
+                        log.info(f"[Pairing] Smart device paired by {user['discord_name']}: {entity_name} (ID: {entity_id}, Type: {entity_type})")
 
-                        # Handle entity pairing through auto-pairing manager
-                        log.warning("[FCM DEBUG] Calling auto_pairing_manager...")
-
-                        async def _handle_entity_pairing():
+                        # Notify about smart device pairing
+                        async def _notify_device():
                             try:
-                                from auto_pairing import auto_pairing_manager
-                                log.warning(f"[FCM DEBUG] Auto-pairing manager imported")
-                                await auto_pairing_manager.handle_pairing_notification(
-                                    discord_id, body
-                                )
-                                log.warning(f"[FCM DEBUG] Auto-pairing handler completed")
+                                await callback(discord_id, {
+                                    "type": "entity",
+                                    "entity_id": entity_id,
+                                    "entity_type": entity_type,
+                                    "entity_name": entity_name
+                                })
                             except Exception as e:
-                                log.error(f"[FCM DEBUG] ❌ Error handling entity pairing: {e}", exc_info=True)
+                                log.error(f"Smart device notification failed: {e}")
 
-                        asyncio.run_coroutine_threadsafe(_handle_entity_pairing(), loop)
-                        log.warning("[FCM DEBUG] ✅ Entity pairing dispatched")
-                        log.warning("=" * 80)
-
-                    else:
-                        log.warning(f"[FCM DEBUG] ❌ Unknown pairing type: {pairing_type!r}")
-                        log.warning("=" * 80)
+                        asyncio.run_coroutine_threadsafe(_notify_device(), loop)
 
                 except Exception as e:
-                    log.error(f"[FCM DEBUG] ❌ FCM listener error: {e}", exc_info=True)
-                    log.warning("=" * 80)
+                    log.error(f"FCM listener error: {e}", exc_info=True)
 
         def _run_fcm():
             try:
@@ -320,7 +273,7 @@ class MultiUserServerManager:
         for discord_id in self.user_manager._users.keys():
             await self.start_fcm_listener_for_user(discord_id, callback)
 
-    # ── Server Switching ──────────────────────────────────────────────────────
+    # -- Server Switching ------------------------------------------------------
     async def switch_server_for_user(self, discord_id: str, identifier: str) -> dict:
         """
         Switch a user's active server by name or index.
