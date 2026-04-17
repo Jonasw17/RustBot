@@ -13,8 +13,8 @@ from status_embed import build_server_status_embed, _parse_time_to_float, _fmt_t
 from server_manager_multiuser import MultiUserServerManager
 from multi_user_auth import UserManager, cmd_register, cmd_whoami, cmd_users, cmd_unregister
 from timers import timer_manager
-from storage_monitor import storage_manager, format_storage_embed
-from death_tracker import death_tracker, format_death_embed, format_death_history_embed
+from raid_alarm import raid_alarm, cmd_raidalarm
+from grid_coordinates import world_to_grid
 from rust_info_db import (
     get_all_vehicle_costs,
     get_all_car_module_costs,
@@ -263,7 +263,7 @@ async def handle_query(
 
     # User registration commands
     if cmd == "register":
-        return await cmd_register(ctx, user_manager)
+        return await cmd_register(ctx, user_manager, args)
     if cmd == "whoami":
         return await cmd_whoami(ctx, user_manager)
     if cmd == "users":
@@ -299,22 +299,6 @@ async def handle_query(
         return await cmd_remove_switch(args, manager, user_manager, discord_id)
     if cmd == "switches":
         return cmd_list_switches(manager, user_manager, discord_id)
-
-    # Storage Monitor commands
-    if cmd in ("addsm", "addstoragem", "addstorage"):
-        return await cmd_add_storage(args, manager, user_manager, discord_id)
-    if cmd in ("viewsm", "viewstorage", "storage"):
-        return await cmd_view_storage(args, manager, user_manager, discord_id)
-    if cmd in ("deletesm", "removesm", "delstorage"):
-        return await cmd_remove_storage(args, manager, user_manager, discord_id)
-    if cmd in ("storages", "listsm"):
-        return cmd_list_storages(manager, user_manager, discord_id)
-
-    # Death tracker commands
-    if cmd in ("deaths", "deathhistory"):
-        return await cmd_death_history(manager, user_manager, discord_id)
-    if cmd in ("cleardeaths",):
-        return await cmd_clear_deaths(manager, user_manager, discord_id)
 
     # Info commands (vehicles, costs, etc.)
     if cmd in ("vehicles", "vehiclecosts"):
@@ -440,13 +424,24 @@ async def cmd_remove_server(
     if not discord_id or not user_manager.has_user(discord_id):
         return "You need to register first."
 
+    # Capture active server key BEFORE removal so we can compare afterward
+    active_before = manager.get_active_server_for_user(discord_id)
+    active_key_before = (
+        f"{active_before['ip']}:{active_before['port']}" if active_before else None
+    )
+
     success, message = user_manager.remove_user_server(discord_id, identifier)
 
     if success:
-        # If removed server was active, clear the connection
-        active = manager.get_active_server_for_user(discord_id)
-        if active and identifier in active.get("name", ""):
-            # Disconnect from removed server
+        # Check whether the server that was active is still in the paired list.
+        # This works regardless of whether the user removed by name or by index.
+        remaining_keys = {
+            f"{s['ip']}:{s['port']}"
+            for s in manager.list_servers_for_user(discord_id)
+        }
+
+        if active_key_before and active_key_before not in remaining_keys:
+            # The active server was the one removed - tear down the connection
             if discord_id in manager._active_sockets:
                 try:
                     await manager._active_sockets[discord_id].disconnect()
@@ -465,7 +460,9 @@ def cmd_help() -> str:
     return (
         "**Rust+ Companion Bot** - prefix: `!`\n\n"
         "**Server Management:**\n"
-        "`servers` - `switch <n or #>` - `removeserver <n or #>` - `register` - `whoami`\n\n"
+        "`servers` - `switch <n or #>` - `removeserver <n or #>`\n"
+        "`register <steam_id>` + attach rustplus.config.json (DM only)\n"
+        "`whoami` - `unregister`\n\n"
         "**Server Info:**\n"
         "`status` - `players` - `pop` - `time` - `map` - `wipe` - `uptime`\n\n"
         "**Team:**\n"
@@ -475,10 +472,6 @@ def cmd_help() -> str:
         "**Smart Items:** (separate from server pairing)\n"
         "`smartitems` - `addswitch <n> <id>` - `removeswitch <n>`\n"
         "`sson <n>` - `ssoff <n>` - `switches`\n\n"
-        "**Storage Monitors:**\n"
-        "`addSM <name> <id>` - `viewSM [name]` - `deleteSM <name>` - `storages`\n\n"
-        "**Death Tracking:**\n"
-        "`deaths` - `cleardeaths`\n\n"
         "**Costs & Info:**\n"
         "`vehicles` - `carmodules` - `price <item>`\n\n"
         "**Utilities:**\n"
@@ -754,7 +747,7 @@ async def _dispatch_live(cmd: str, args: str, socket, active: dict) -> str | tup
     if cmd == "team":               return await _cmd_team(socket)
     if cmd == "events":             return await _cmd_events(socket, name)
     if cmd == "wipe":               return await _cmd_wipe(socket, name)
-    if cmd == "uptime":             return _cmd_uptime(name)
+    if cmd == "uptime":             return await _cmd_uptime(socket, name)
     if cmd == "heli":               return await _cmd_heli(socket, name)
     if cmd == "cargo":              return await _cmd_cargo(socket, name)
     if cmd == "chinook":            return await _cmd_chinook(socket, name)
@@ -796,7 +789,7 @@ async def _cmd_wipe(socket, name: str) -> str:
     if isinstance(info, RustError):
         return f"Error: {info.reason}"
     elapsed = _fmt_elapsed(int(_time_module.time()) - info.wipe_time) if info.wipe_time else "Unknown"
-    return f"**{name}** ” Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
+    return f"**{name}** - Last wipe: **{_fmt_ts(info.wipe_time)}** ({elapsed} ago)"
 
 
 def _cmd_uptime(name: str) -> str:
@@ -815,7 +808,7 @@ async def _cmd_time(socket, name: str) -> str:
     till_change = _time_till(now_f, sunset if is_day else sunrise)
     phase = f"Till night: {till_change}" if is_day else f"Till day: {till_change}"
     return (
-        f"**{name} ” In-Game Time**\n"
+        f"**{name} - In-Game Time**\n"
         f"> **Now:** {_fmt_time(t.time)}\n"
         f"> **Sunrise:** {_fmt_time(t.sunrise)}  |  **Sunset:** {_fmt_time(t.sunset)}\n"
         f"> {phase}"
@@ -848,7 +841,7 @@ async def _cmd_map(socket, active: dict) -> str | tuple[str, bytes]:
         )
         return (caption, img_bytes)
     except Exception as e:
-        log.warning(f"Map image fetch failed: {e} ” falling back to text")
+        log.warning(f"Map image fetch failed: {e} - falling back to text")
         return (
             f"**{name}**\n"
             f"> **Map:** {info.map}  |  **Seed:** `{info.seed}`  |  **Size:** {info.size}\n"
@@ -866,8 +859,8 @@ async def _cmd_team(socket) -> str:
     lines = []
     for m in team.members:
         status = "Online" if m.is_online else "Offline"
-        alive = "" if m.is_alive else " ” Dead"
-        lines.append(f"> **{m.name}** ” {status}{alive}")
+        alive = "" if m.is_alive else " [Dead]"
+        lines.append(f"> **{m.name}** - {status}{alive}")
     return f"**Team ({len(team.members)} members)**\n" + "\n".join(lines)
 
 
@@ -901,7 +894,7 @@ async def _cmd_afk(socket) -> str:
     return (
             "**Online Team Members**\n"
             + "\n".join(f"> **{m.name}**" for m in online)
-            + "\n_AFK detection requires position history ” not available via Rust+ API._"
+            + "\n_AFK detection requires position history - not available via Rust+ API._"
     )
 
 
@@ -913,18 +906,18 @@ async def _cmd_alive(socket, args: str) -> str:
         match = next((m for m in team.members if args.lower() in m.name.lower()), None)
         if not match:
             return f"No team member found matching `{args}`."
-        return f"**{match.name}** ” {'Alive' if match.is_alive else 'Dead'}"
+        return f"**{match.name}** - {'Alive' if match.is_alive else 'Dead'}"
     alive = [m for m in team.members if m.is_alive]
     dead = [m for m in team.members if not m.is_alive]
-    lines = [f"> **{m.name}** ” Alive" for m in alive] + \
-            [f"> **{m.name}** ” Dead" for m in dead]
+    lines = [f"> **{m.name}** - Alive" for m in alive] + \
+            [f"> **{m.name}** - Dead" for m in dead]
     return f"**Team Status ({len(alive)}/{len(team.members)} alive)**\n" + "\n".join(lines)
 
 
 async def _cmd_leader(socket, args: str) -> str:
     """
-    !leader           ” promote self
-    !leader <name>    ” promote teammate by name
+    !leader           " promote self
+    !leader <name>    " promote teammate by name
     """
     team = await socket.get_team_info()
     if isinstance(team, RustError):
@@ -964,7 +957,7 @@ async def _cmd_events(socket, name: str) -> str:
             active_types.add(m.type)
 
     if not active_types:
-        return f"**{name}** ” No active events right now."
+        return f"**{name}** - No active events right now."
 
     now = _time_module.time()
     for type_id in active_types:
@@ -979,9 +972,9 @@ async def _cmd_events(socket, name: str) -> str:
     for type_id in sorted(active_types):
         elapsed_s = int(now - _event_first_seen[type_id])
         age = f"{elapsed_s}s" if elapsed_s < 60 else f"{elapsed_s // 60}m {elapsed_s % 60}s"
-        lines.append(f"> **{EVENT_TYPES[type_id]}** ” active for {age}")
+        lines.append(f"> **{EVENT_TYPES[type_id]}** - active for {age}")
 
-    return f"**{name} ” Active Events**\n" + "\n".join(lines)
+    return f"**{name} - Active Events**\n" + "\n".join(lines)
 
 
 async def _cmd_heli(socket, name: str) -> str:
@@ -990,9 +983,9 @@ async def _cmd_heli(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     helis = list({m.type: m for m in markers if m.type == 3}.values())
     if not helis:
-        return f"**{name}** ” No Patrol Helicopter on the map right now."
+        return f"**{name}** - No Patrol Helicopter on the map right now."
     h = helis[0]
-    return f"**{name} ” Patrol Helicopter**\n> On the map ” Position: `{int(h.x)}, {int(h.y)}`"
+    return f"**{name} - Patrol Helicopter**\n> On the map - Position: `{int(h.x)}, {int(h.y)}`"
 
 
 async def _cmd_cargo(socket, name: str) -> str:
@@ -1001,9 +994,9 @@ async def _cmd_cargo(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ships = list({m.type: m for m in markers if m.type == 4}.values())
     if not ships:
-        return f"**{name}** ” No Cargo Ship on the map right now."
+        return f"**{name}** - No Cargo Ship on the map right now."
     s = ships[0]
-    return f"**{name} ” Cargo Ship**\n> On the map ” Position: `{int(s.x)}, {int(s.y)}`"
+    return f"**{name} - Cargo Ship**\n> On the map - Position: `{int(s.x)}, {int(s.y)}`"
 
 
 async def _cmd_chinook(socket, name: str) -> str:
@@ -1012,9 +1005,9 @@ async def _cmd_chinook(socket, name: str) -> str:
         return f"Error: {markers.reason}"
     ch47s = list({m.type: m for m in markers if m.type == 7}.values())
     if not ch47s:
-        return f"**{name}** ” No Chinook CH-47 on the map right now."
+        return f"**{name}** - No Chinook CH-47 on the map right now."
     c = ch47s[0]
-    return f"**{name} ” Chinook CH-47**\n> On the map ” Position: `{int(c.x)}, {int(c.y)}`"
+    return f"**{name} - Chinook CH-47**\n> On the map - Position: `{int(c.x)}, {int(c.y)}`"
 
 
 async def _cmd_large(socket, name: str) -> str:
@@ -1032,10 +1025,10 @@ async def _cmd_large(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} ” Large Oil Rig**\n"
+                f"**{name} - Large Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} ” Large Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} - Large Oil Rig**\n> No locked crate active on the map right now."
 
     if 60 not in _event_first_seen:
         _event_first_seen[60] = now
@@ -1046,13 +1039,13 @@ async def _cmd_large(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} ” Large Oil Rig**\n"
-            f"> Locked Crate active ” unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx ” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} - Large Oil Rig**\n"
+            f"> Locked Crate active - unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx - based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     else:
         return (
-            f"**{name} ” Large Oil Rig**\n"
+            f"**{name} - Large Oil Rig**\n"
             f"> Locked Crate should be **unlocked** (crate active for {_fmt_elapsed(elapsed)})"
         )
 
@@ -1072,10 +1065,10 @@ async def _cmd_small(socket, name: str) -> str:
         if last:
             ago = int(now - last)
             return (
-                f"**{name} ” Small Oil Rig**\n"
+                f"**{name} - Small Oil Rig**\n"
                 f"> No crate active. Last trigger: **{_fmt_elapsed(ago)} ago**."
             )
-        return f"**{name} ” Small Oil Rig**\n> No locked crate active on the map right now."
+        return f"**{name} - Small Oil Rig**\n> No locked crate active on the map right now."
 
     if 61 not in _event_first_seen:
         _event_first_seen[61] = now
@@ -1086,12 +1079,12 @@ async def _cmd_small(socket, name: str) -> str:
 
     if remaining > 0:
         return (
-            f"**{name} ” Small Oil Rig**\n"
-            f"> Locked Crate active ” unlocks in **{_fmt_elapsed(remaining)}**\n"
-            f"> (approx ” based on crate first seen {_fmt_elapsed(elapsed)} ago)"
+            f"**{name} - Small Oil Rig**\n"
+            f"> Locked Crate active - unlocks in **{_fmt_elapsed(remaining)}**\n"
+            f"> (approx - based on crate first seen {_fmt_elapsed(elapsed)} ago)"
         )
     return (
-        f"**{name} ” Small Oil Rig**\n"
+        f"**{name} - Small Oil Rig**\n"
         f"> Locked Crate should be **unlocked** (active for {_fmt_elapsed(elapsed)})"
     )
 
@@ -1183,7 +1176,7 @@ def _cmd_cctv(args: str) -> str:
     k, codes = _fuzzy_match(args, CCTV_DATA)
     if not codes:
         return f"No CCTV codes for `{args}`."
-    return f"**CCTV ” {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
+    return f"**CCTV - {k.title()}**\n" + "\n".join(f"> `{c}`" for c in codes)
 
 
 #  Game Q&A (fallback)
@@ -1196,7 +1189,7 @@ def cmd_game_question(query: str) -> str:
         ("scrap", "farm"): "**Best Scrap Farming:**\n> Tier 1 monuments (Gas Station, Supermarket)\n> Recycle components\n> Oil Rig = massive scrap (high risk)",
         ("best", "weapon", "early"): "**Best Early Weapons:**\n> 1. Bow\n> 2. Crossbow\n> 3. Pipe Shotgun",
         ("bradley", "apc"): "**Bradley APC:**\n> Launch Site\n> HV rockets or 40mm HE\n> Drops 3 Bradley Crates",
-        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists ” bring armor",
+        ("cargo", "ship"): "**Cargo Ship:**\n> Spawns ~every 2 hours\n> 2 locked crates every ~15min\n> Heavy scientists - bring armor",
         ("radiation",): "**Radiation:**\n> Gas Station/Supermarket: 4 RAD\n> Airfield: 10 RAD\n> Water Treatment: 15 RAD\n> Launch Site: 50 RAD",
     }
     for keywords, answer in qa.items():
@@ -1267,237 +1260,3 @@ def _time_till(now: float, target: float) -> str:
         hours = int(real_minutes // 60)
         mins = int(real_minutes % 60)
         return f"{hours}h {mins}m"
-
-
-# ===== Storage Monitor Commands =====
-
-async def cmd_add_storage(
-        args: str,
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str:
-    """
-    !addSM <name> <entity_id>
-    Add a storage monitor to track a storage container.
-    """
-    if not args:
-        return (
-            "Usage: `!addSM <name> <entity_id>`\n"
-            "Example: `!addSM main_loot 12345678`\n\n"
-            "Get entity IDs from Rust+ app when pairing storage containers."
-        )
-    
-    parts = args.split(None, 1)
-    if len(parts) != 2:
-        return "Usage: `!addSM <name> <entity_id>`"
-    
-    name, entity_id_str = parts
-    
-    # Validate entity ID
-    try:
-        entity_id = int(entity_id_str)
-    except ValueError:
-        return f"Invalid entity ID: `{entity_id_str}`. Must be a number."
-    
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected. Use `!change <server>` to connect first."
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    
-    success, message = storage_manager.add_monitor(
-        discord_id, server_key, name, entity_id
-    )
-    
-    if success:
-        message += f"\n\nCheck it with: `!viewSM {name}`"
-    
-    return message
-
-
-async def cmd_view_storage(
-        args: str,
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str | discord.Embed | tuple:
-    """
-    !viewSM [name]
-    View contents of a storage monitor (or all if no name given).
-    """
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected."
-    
-    socket = manager.get_socket_for_user(discord_id)
-    if not socket:
-        return "Not connected to server."
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    user = user_manager.get_user(discord_id)
-    
-    if not args:
-        # Show all storage monitors
-        results = await storage_manager.check_all_for_user(socket, discord_id, server_key)
-        
-        if not results:
-            return (
-                f"**Storage Monitors on {active.get('name', active['ip'])}**\n"
-                "No storage monitors configured yet.\n\n"
-                "Use `!addSM <name> <entity_id>` to add one."
-            )
-        
-        # Return first storage as embed
-        embed = format_storage_embed(results[0], user.get('discord_name'))
-        
-        # If multiple storages, add summary
-        if len(results) > 1:
-            other_names = [s['name'] for s in results[1:]]
-            embed.add_field(
-                name=f"Other Storages ({len(results) - 1})",
-                value=", ".join(f"`{n}`" for n in other_names),
-                inline=False
-            )
-        
-        return embed
-    
-    # View specific storage
-    name = args.strip()
-    success, data = await storage_manager.check_storage(
-        socket, discord_id, server_key, name
-    )
-    
-    if not success:
-        return data  # Error message
-    
-    embed = format_storage_embed(data, user.get('discord_name'))
-    return embed
-
-
-async def cmd_remove_storage(
-        args: str,
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str:
-    """
-    !deleteSM <name>
-    Remove a storage monitor.
-    """
-    if not args:
-        return "Usage: `!deleteSM <name>`"
-    
-    name = args.strip()
-    
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected."
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    
-    success, message = storage_manager.remove_monitor(discord_id, server_key, name)
-    return message
-
-
-def cmd_list_storages(
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str:
-    """
-    !storages
-    List all storage monitors for the current server.
-    """
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected."
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    monitors = storage_manager.get_monitors_for_user(discord_id, server_key)
-    
-    if not monitors:
-        return (
-            f"**Storage Monitors on {active.get('name', active['ip'])}**\n"
-            "No storage monitors configured yet.\n\n"
-            "Use `!addSM <name> <entity_id>` to add one."
-        )
-    
-    lines = []
-    for monitor in monitors:
-        lines.append(f"`{monitor['name']}` - Entity ID: `{monitor['entity_id']}`")
-    
-    return (
-        f"**Storage Monitors on {active.get('name', active['ip'])}** ({len(monitors)})\n" +
-        "\n".join(lines) +
-        "\n\nCheck contents: `!viewSM <name>`"
-    )
-
-
-# ===== Death Tracker Commands =====
-
-async def cmd_death_history(
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> discord.Embed:
-    """
-    !deaths
-    Show recent death history for the current server.
-    """
-    if not discord_id or not user_manager.has_user(discord_id):
-        return discord.Embed(
-            title="Death History",
-            description="You need to register first.",
-            color=0xFF0000
-        )
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return discord.Embed(
-            title="Death History",
-            description="No server connected.",
-            color=0xFF0000
-        )
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    deaths = death_tracker.get_recent_deaths(discord_id, server_key, count=10)
-    
-    embed = format_death_history_embed(deaths, active.get('name', active['ip']))
-    return embed
-
-
-async def cmd_clear_deaths(
-        manager: MultiUserServerManager,
-        user_manager: UserManager,
-        discord_id: str
-) -> str:
-    """
-    !cleardeaths
-    Clear death history for the current server.
-    """
-    if not discord_id or not user_manager.has_user(discord_id):
-        return "You need to register first."
-    
-    active = manager.get_active_server_for_user(discord_id)
-    if not active:
-        return "No server connected."
-    
-    server_key = f"{active['ip']}:{active['port']}"
-    success, message = death_tracker.clear_history(discord_id, server_key)
-    
-    return message
-
-

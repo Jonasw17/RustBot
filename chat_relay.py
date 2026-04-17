@@ -29,7 +29,7 @@ class ChatRelay:
         self._seen_messages: set[str] = set()
 
     async def start(self):
-        """Main loop — polls Rust+ team chat every POLL_INTERVAL seconds."""
+        """Main loop - polls Rust+ team chat every POLL_INTERVAL seconds."""
         log.info(f"Chat relay started → #{self.channel.name}")
 
         while True:
@@ -56,7 +56,7 @@ class ChatRelay:
 
             # Skip very old messages on startup (only relay fresh ones)
             if len(self._seen_messages) <= len(messages):
-                continue  # Skip the initial batch — only new ones after boot
+                continue  # Skip the initial batch - only new ones after boot
 
             # Format and send to Discord
             embed = discord.Embed(
@@ -72,7 +72,7 @@ class ChatRelay:
             except discord.HTTPException as e:
                 log.error(f"Discord send error: {e}")
 
-        # Keep the seen set from growing forever — keep last 500 keys
+        # Keep the seen set from growing forever - keep last 500 keys
         if len(self._seen_messages) > 500:
             to_remove = list(self._seen_messages)[:200]
             for k in to_remove:
@@ -94,7 +94,7 @@ async def setup_discord_to_rust(
         In bot.py on_message, add:
             await discord_to_rust(message, rust, CHAT_RELAY_CHANNEL)
     """
-    pass  # See bot.py — handled inline in on_message
+    pass  # See bot.py - handled inline in on_message
 
 
 async def discord_to_rust(

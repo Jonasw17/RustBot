@@ -5,12 +5,8 @@ rustplus.config.json
 /__pycache__/
 .build/
 /dist/
+pair.spec
 rust-bot.spec
+pair.exe
 rust-bot.exe
 users.json
-storage_monitors.json
-death_history.json
-event_timestamps.json
-switches.json
-timers.json
-active_connections.json

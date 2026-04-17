@@ -96,18 +96,18 @@ class TimerManager:
             "text":       text or f"Timer #{timer_id}",
         }
         self._save()
-        return True, f"Timer **#{timer_id}** set for **{fmt_duration(secs)}** — _{text or 'no label'}_"
+        return True, f"Timer **#{timer_id}** set for **{fmt_duration(secs)}** - _{text or 'no label'}_"
 
     def remove(self, id_str: str) -> tuple[bool, str]:
         try:
             timer_id = int(id_str)
         except ValueError:
-            return False, f"Invalid ID `{id_str}` — use a number."
+            return False, f"Invalid ID `{id_str}` - use a number."
         if timer_id not in self._timers:
             return False, f"No timer with ID `{timer_id}`."
         t = self._timers.pop(timer_id)
         self._save()
-        return True, f"Removed timer **#{timer_id}** — _{t['text']}_"
+        return True, f"Removed timer **#{timer_id}** - _{t['text']}_"
 
     def list_timers(self) -> str:
         if not self._timers:
@@ -116,11 +116,11 @@ class TimerManager:
         lines = []
         for tid, t in sorted(self._timers.items()):
             remaining = max(0, int(t["expires_at"] - now))
-            lines.append(f"> **#{tid}** `{fmt_duration(remaining)}` remaining — _{t['text']}_")
+            lines.append(f"> **#{tid}** `{fmt_duration(remaining)}` remaining - _{t['text']}_")
         return "**Active Timers:**\n" + "\n".join(lines)
 
     async def run_loop(self):
-        """Background loop — checks timers every second and fires callbacks."""
+        """Background loop - checks timers every second and fires callbacks."""
         log.info("Timer loop started")
         while True:
             now = time.time()
